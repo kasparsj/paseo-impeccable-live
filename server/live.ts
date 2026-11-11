@@ -5,9 +5,12 @@ import { constants as fsConstants } from "node:fs";
 import { access, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { checkAbort } from "./abort.ts";
+import { isWithin, resolveContainedDirectory, validateLocalUrl } from "./local-project.ts";
 import type { retryRpc, startRpc, statusRpc, stopRpc } from "../shared/live";
 
-type StartInput = RpcInput<typeof startRpc>;
+export type BridgeStartInput = { workspaceId: string; agentId: string; appPath: string; url: string; cliPath?: string; exactAppRoot?: boolean; signal?: AbortSignal };
+type StartInput = BridgeStartInput;
 type BindingInput = RpcInput<typeof statusRpc>;
 
 export interface LivePublicStatus {
@@ -26,7 +29,7 @@ interface HelperIdentity {
   token: string;
 }
 
-interface RunBinding {
+export interface RunBinding {
   workspaceId: string;
   agentId: string;
   workspaceRoot: string;
@@ -51,13 +54,36 @@ interface CommandResult {
 
 const MAX_COMMAND_OUTPUT = 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 30_000;
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 export class LiveBridge {
   private active: ActiveRun | null = null;
   private publicStatus: LivePublicStatus = idleStatus();
   private serial: Promise<void> = Promise.resolve();
   private generation = 0;
+
+  private readonly lifecycle?: {
+    boot(binding: RunBinding): Promise<unknown>;
+    stop(binding: RunBinding): Promise<void>;
+  };
+  constructor(lifecycle?: LiveBridge["lifecycle"]) { this.lifecycle = lifecycle; }
+
+  /** Snapshot reads must remain responsive while startup or agent calls are pending. */
+  peek(input: BindingInput): LivePublicStatus {
+    if (this.active) this.assertBinding(input, this.active);
+    return this.snapshot();
+  }
+
+  clearStoppedStatus(): void {
+    if (this.active) throw new Error("Stop Impeccable Live before changing its binding.");
+    this.publicStatus = idleStatus();
+  }
+
+  updatePreviewUrl(input: BindingInput, url: string): LivePublicStatus {
+    const run = this.requireActive(input);
+    run.url = validateLocalUrl(url);
+    this.publicStatus = { ...this.publicStatus, url: run.url };
+    return this.snapshot();
+  }
 
   start(input: StartInput, paseo: PaseoApi): Promise<LivePublicStatus> {
     return this.serialize(async () => {
@@ -88,6 +114,7 @@ export class LiveBridge {
 
       this.publicStatus = statusOf("starting", "Validating Impeccable Live…", null);
       const binding = await resolveRunBinding(input, paseo);
+      checkAbort(input.signal);
       this.publicStatus = statusOf("starting", "Starting Impeccable Live…", binding);
 
       const preexisting = await readHelperRecord(binding.appRoot);
@@ -96,7 +123,8 @@ export class LiveBridge {
         throw safeError(this.publicStatus.message);
       }
 
-      const boot = await runJsonCommand(binding.cliPath, ["live"], binding.appRoot);
+      const boot = this.lifecycle ? await this.lifecycle.boot(binding) : await runJsonCommand(binding.cliPath, ["live", "--target", binding.appRoot], binding.appRoot);
+      checkAbort(input.signal);
       assertBootSucceeded(boot);
       const helper = await readHelperIdentity(binding.appRoot);
       if (!helper) {
@@ -107,11 +135,12 @@ export class LiveBridge {
 
       const agent = paseo.agents.ref(binding.agentId);
       try {
-        await boundedRefreshBoundAgent(agent, binding.workspaceId);
+        await boundedRefreshBoundAgent(agent, binding.workspaceId, input.signal);
+        checkAbort(input.signal);
       } catch (error) {
         const current = await readHelperIdentity(binding.appRoot);
         if (current && sameHelper(current, helper)) {
-          await runCommand(binding.cliPath, ["live-server", "stop"], binding.appRoot).catch(() => undefined);
+          await this.stopHelper(binding).catch(() => undefined);
         }
         throw error;
       }
@@ -213,6 +242,14 @@ export class LiveBridge {
     });
   }
 
+  /** The guardian owns helper cleanup during plugin teardown; only stop local polling here. */
+  async quiesce(): Promise<void> {
+    const run = this.active;
+    run?.abort.abort();
+    await run?.pollTask?.catch(() => undefined);
+    if (this.active === run) this.active = null;
+  }
+
   private async stopOwned(input: BindingInput): Promise<LivePublicStatus> {
     const run = this.requireActive(input);
     this.publicStatus = statusOf("stopping", "Stopping Impeccable Live…", run, run.pendingEvent ? eventLabel(run.pendingEvent) : null);
@@ -231,7 +268,7 @@ export class LiveBridge {
       throw safeError(this.publicStatus.message);
     }
 
-    await runCommand(run.cliPath, ["live-server", "stop"], run.appRoot);
+    await this.stopHelper(run);
     this.active = null;
     this.publicStatus = statusOf("stopped", "Impeccable Live stopped. Upstream journals were retained.", run);
     return this.snapshot();
@@ -254,7 +291,7 @@ export class LiveBridge {
         const current = await readHelperRecord(run.appRoot);
         if (current.kind === "valid" && sameHelper(current.identity, run.helper)) {
           try {
-            await runCommand(run.cliPath, ["live-server", "stop"], run.appRoot);
+            await this.stopHelper(run);
           } catch {
             this.publicStatus = statusOf("error", "The live session ended, but owned helper cleanup failed. Stop this run explicitly.", run);
             return;
@@ -303,6 +340,11 @@ export class LiveBridge {
     return this.active;
   }
 
+  private async stopHelper(binding: RunBinding): Promise<void> {
+    if (this.lifecycle) return this.lifecycle.stop(binding);
+    await runCommand(binding.cliPath, ["live-server", "stop"], binding.appRoot);
+  }
+
   private assertBinding(input: BindingInput, run: RunBinding): void {
     if (input.workspaceId !== run.workspaceId || input.agentId !== run.agentId) {
       throw safeError("This Impeccable Live run belongs to a different workspace or agent.");
@@ -320,7 +362,7 @@ export class LiveBridge {
   }
 }
 
-async function resolveRunBinding(input: StartInput, paseo: PaseoApi): Promise<RunBinding> {
+export async function resolveRunBinding(input: StartInput, paseo: PaseoApi): Promise<RunBinding> {
   const workspace = paseo.workspaces.ref(input.workspaceId);
   const refreshedWorkspace = await workspace.refresh();
   if (!refreshedWorkspace || !workspace.directory) throw safeError("The selected workspace has no available directory.");
@@ -329,8 +371,8 @@ async function resolveRunBinding(input: StartInput, paseo: PaseoApi): Promise<Ru
   if (!workspaceStats.isDirectory()) throw safeError("The selected workspace directory is unavailable.");
 
   const agent = paseo.agents.ref(input.agentId);
-  await boundedRefreshBoundAgent(agent, input.workspaceId);
-  const appRoot = await resolveAppRoot(workspaceRoot, input.appPath);
+  await boundedRefreshBoundAgent(agent, input.workspaceId, input.signal);
+  const appRoot = input.exactAppRoot ? await resolveContainedDirectory(workspaceRoot, input.appPath) : await resolveAppRoot(workspaceRoot, input.appPath);
   const url = validateLocalUrl(input.url);
   const cliPath = await resolveCliPath(input.cliPath);
   return { workspaceId: input.workspaceId, agentId: input.agentId, workspaceRoot, appRoot, url, cliPath };
@@ -364,20 +406,7 @@ async function isFrontendDirectory(directory: string): Promise<boolean> {
   }
 }
 
-function validateLocalUrl(value: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw safeError("Preview URL must be a valid local HTTP URL.");
-  }
-  if (parsed.protocol !== "http:" || !LOCAL_HOSTS.has(parsed.hostname) || parsed.username || parsed.password) {
-    throw safeError("Preview URL must use http://localhost, http://127.0.0.1, or http://[::1].");
-  }
-  return parsed.toString();
-}
-
-async function resolveCliPath(override?: string): Promise<string> {
+export async function resolveCliPath(override?: string): Promise<string> {
   const candidates = override
     ? [override]
     : [path.join(homedir(), ".agents/skills/impeccable/scripts/impeccable"), path.join(homedir(), ".codex/skills/impeccable/scripts/impeccable")];
@@ -401,8 +430,8 @@ async function refreshBoundAgent(agent: PaseoAgentHandle, workspaceId: string): 
   }
 }
 
-function boundedRefreshBoundAgent(agent: PaseoAgentHandle, workspaceId: string): Promise<void> {
-  return abortable(() => refreshBoundAgent(agent, workspaceId), new AbortController().signal, 30_000, "The selected agent did not refresh in time.");
+function boundedRefreshBoundAgent(agent: PaseoAgentHandle, workspaceId: string, signal?: AbortSignal): Promise<void> {
+  return abortable(() => refreshBoundAgent(agent, workspaceId), signal ?? new AbortController().signal, 30_000, "The selected agent did not refresh in time.");
 }
 
 async function readHelperIdentity(appRoot: string): Promise<HelperIdentity | null> {
@@ -410,7 +439,7 @@ async function readHelperIdentity(appRoot: string): Promise<HelperIdentity | nul
   return record.kind === "valid" ? record.identity : null;
 }
 
-async function readHelperRecord(appRoot: string): Promise<{ kind: "missing" } | { kind: "invalid" } | { kind: "valid"; identity: HelperIdentity }> {
+export async function readHelperRecord(appRoot: string): Promise<{ kind: "missing" } | { kind: "invalid" } | { kind: "valid"; identity: HelperIdentity }> {
   try {
     const raw = JSON.parse(await readFile(path.join(appRoot, ".impeccable/live/server.json"), "utf8")) as Record<string, unknown>;
     if (!Number.isSafeInteger(raw.pid) || Number(raw.pid) <= 0 || !Number.isSafeInteger(raw.port) || Number(raw.port) <= 0 || typeof raw.token !== "string" || raw.token.length < 1) {
@@ -442,7 +471,8 @@ async function runJsonCommand(cliPath: string, args: string[], cwd: string, sign
 
 function runCommand(cliPath: string, args: string[], cwd: string, signal?: AbortSignal, timeoutMs = COMMAND_TIMEOUT_MS): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cliPath, args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cliPath, args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, IMPECCABLE_LAUNCHER_PROBE: "1", COREPACK_ENABLE_NETWORK: "0", COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" } });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -596,11 +626,6 @@ function sameHelper(left: HelperIdentity, right: HelperIdentity): boolean {
 
 function sameConfiguration(left: RunBinding, right: RunBinding): boolean {
   return left.workspaceId === right.workspaceId && left.agentId === right.agentId && left.appRoot === right.appRoot && left.url === right.url && left.cliPath === right.cliPath;
-}
-
-function isWithin(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
 function statusOf(phase: string, message: string, binding: Partial<RunBinding> | null, pendingEvent: string | null = null): LivePublicStatus {

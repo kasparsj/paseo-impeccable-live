@@ -16,30 +16,78 @@ export const liveBindingSchema = z.object({
   agentId: z.string().min(1),
 });
 
+export const developmentOverridesSchema = z.object({
+  appPath: z.string().max(4096).optional(),
+  url: z.string().max(8192).optional(),
+  cliPath: z.string().max(4096).optional(),
+  command: z.string().max(4096).optional(),
+  args: z.array(z.string().max(4096)).max(100).optional(),
+  selectionId: z.string().max(256).optional(),
+});
+
+export const choiceSchema = z.object({ id: z.string(), label: z.string(), detail: z.string(), persistSelection: z.boolean().optional() });
+export const developmentStatusSchema = z.object({
+  phase: z.enum(["stopped", "discovering", "selection-required", "starting", "verifying", "ready", "error", "stopping"]),
+  ownership: z.enum(["none", "owned", "external"]),
+  appRoot: z.string().nullable(),
+  command: z.string().nullable(),
+  url: z.string().nullable(),
+  verified: z.boolean(),
+  pid: z.number().nullable(),
+  message: z.string(),
+});
+export const sessionStatusSchema = z.object({
+  attempt: z.number().int(),
+  phase: z.string(),
+  message: z.string(),
+  choices: z.array(choiceSchema),
+  development: developmentStatusSchema,
+  session: liveStatusSchema,
+});
+
 export const startRpc = defineRpc({
   name: "impeccable-live.start",
-  input: liveBindingSchema.extend({
-    appPath: z.string(),
-    url: z.string(),
-    cliPath: z.string().optional(),
-  }),
-  output: liveStatusSchema,
+  input: liveBindingSchema.extend(developmentOverridesSchema.shape),
+  output: sessionStatusSchema,
 });
 
 export const statusRpc = defineRpc({
   name: "impeccable-live.status",
   input: liveBindingSchema,
-  output: liveStatusSchema,
+  output: sessionStatusSchema,
 });
 
 export const stopRpc = defineRpc({
   name: "impeccable-live.stop",
   input: liveBindingSchema,
-  output: liveStatusSchema,
+  output: sessionStatusSchema,
 });
 
 export const retryRpc = defineRpc({
   name: "impeccable-live.retry",
   input: liveBindingSchema,
-  output: liveStatusSchema,
+  output: sessionStatusSchema,
 });
+
+export const selectRpc = defineRpc({
+  name: "impeccable-live.select",
+  input: liveBindingSchema.extend({ attempt: z.number().int(), selectionId: z.string().max(8192) }),
+  output: sessionStatusSchema,
+});
+export const stopDevServerRpc = defineRpc({
+  name: "impeccable-live.stop-development",
+  input: liveBindingSchema,
+  output: sessionStatusSchema,
+});
+export const devLogsRpc = defineRpc({
+  name: "impeccable-live.logs",
+  input: liveBindingSchema.extend({ cursor: z.number().int().nonnegative().optional() }),
+  output: z.object({
+    lines: z.array(z.object({ sequence: z.number(), source: z.enum(["stdout", "stderr", "system"]), text: z.string(), time: z.string() })),
+    cursor: z.number(), reset: z.boolean(), truncated: z.boolean(), available: z.boolean(),
+  }),
+});
+
+export type SessionStatus = z.infer<typeof sessionStatusSchema>;
+export type DevelopmentStatus = z.infer<typeof developmentStatusSchema>;
+export type DevelopmentOverrides = z.infer<typeof developmentOverridesSchema>;

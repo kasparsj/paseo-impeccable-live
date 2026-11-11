@@ -4,15 +4,19 @@ An unofficial community [Paseo](https://paseo.sh/) integration for [Impeccable L
 
 ## Recall
 
-In an existing workspace agent, enter `/impeccable-live`, or use Command Center → **Open Impeccable Live**. Set the app's relative folder and local preview URL, then **Start / resume** and **Open preview**. A workspace containing a `frontend` app can use automatic discovery from `.`.
+In an existing workspace agent, enter `/impeccable-live`, or use Command Center → **Open Impeccable Live**. Select **Start / resume**. The plugin discovers a local web app, its package manager and development command, then starts or reuses its development server. It verifies the local HTTP URL before starting Impeccable and opens the ready page in Paseo Desktop's browser. When several apps, package managers, commands or preview URLs are plausible, the panel asks which one to use.
 
-Configuration is saved with the panel tab for session restoration; creating a new tab starts with defaults.
+New panels use automatic discovery. App folder, development executable, development arguments, preview URL and Impeccable executable are under **Advanced settings**. Development arguments are a JSON string array, so they are passed as structured arguments rather than parsed as a shell command. Overrides are saved with the panel tab; process ownership is not persisted or reconstructed from saved process IDs.
+
+In a monorepo, the launch directory and preview app can differ. A root command can start the full stack while Impeccable targets a detected web app such as `frontend`. When several web apps qualify, the target choices identify which preview belongs to each launch command.
 
 The plugin owns the long-running listener. Browser requests wake the attached agent; the agent performs the requested work and replies through the installed Impeccable CLI. Starting the plugin does not itself request a redesign. Delivery accepted by Paseo is distinct from work completed by the agent.
 
 ## Setup
 
-Requires Paseo app and daemon 0.15.4, Impeccable installed as a local skill, and a working local development server. The first release is pinned below 0.16 pending compatibility checks. The CLI is discovered from the usual personal skill directories, or set an absolute executable path under advanced settings. Product/Design records and `.impeccable/live/config.json` must already exist; missing setup is shown without inventing project context.
+Requires Paseo app and daemon 0.15.4, Impeccable installed as a local skill with its engine already available, and the application's package manager and dependencies already installed. The first release is pinned below 0.16 pending compatibility checks. The plugin discovers npm, pnpm, Yarn or Bun from project metadata and lockfiles. It blocks Corepack network access and does not run package installation, bootstrap, preparation, publication or deployment commands. Missing tools or dependencies are shown as startup errors rather than installed automatically.
+
+The Impeccable CLI is discovered from the usual personal skill directories, or set as an absolute executable under Advanced settings. Product/Design records and `.impeccable/live/config.json` must already exist; missing setup is shown without inventing project context.
 
 Build/check locally:
 
@@ -41,18 +45,20 @@ Plugins must first be explicitly enabled on that daemon. No automatic config cha
 
 ## Lifecycle and recovery
 
-Stop the session with the panel before switching projects. Closing the panel does not stop the listener; disabling/reloading the plugin cleans up its owned helper. Stopping the helper does not cancel a design edit already accepted by the agent. Existing externally started helpers are refused. Stop them through their owning session before starting this wrapper.
+**Stop session** stops the owned Impeccable helper and retains the development server for a later resume. **Stop development server** first cleans up the bound helper, then stops only the development process tree started by this integration. A development server reused from outside the plugin is labelled external and is never stopped by either control. Closing the panel does not stop either resource.
 
-Reloads do not silently restart design sessions. Reopen the panel and start explicitly. Upstream Impeccable journals retain unfinished work. If delivery is uncertain, inspect the bound agent and upstream status before **Retry event delivery**; retry may duplicate a request whose send was accepted before a transport error.
+Disabling or reloading the plugin cleans its owned helper and development process tree, including startup that is still in progress. A separate guardian completes identity-checked cleanup if the plugin process is interrupted during normal reload. Reload does not silently restart either service. The plugin does not claim cleanup after an operating-system crash or a project command that deliberately detaches itself from the owned process group.
+
+Upstream Impeccable journals retain unfinished work. A development-server crash leaves the helper and any pending event visible; **Start / resume** can reconnect on the same or a newly selected local port without automatically resending the event. If delivery is uncertain, inspect the bound agent and upstream status before **Retry event delivery**; retry may duplicate a request whose send was accepted before a transport error. Stopping either service does not cancel a design edit already accepted by the agent. Existing externally started Impeccable helpers remain refused and must be stopped through their owning session.
 
 The browser runs on the client desktop. This release supports local HTTP URLs only and does not tunnel remote development servers or helpers. A web client on the development machine can open an external URL. Phone preview is not supported because loopback addresses refer to the phone itself.
 
 ## Verification boundary
 
-TypeScript checks and 15 child-process integration tests pass. The plugin has loaded in Paseo 0.15.4; its panel, start action, preview opener, and a browser → agent → browser Steer acknowledgement have been exercised. The isolated installed-helper lifecycle also passes. A generated design variant accepted into source remains untested. See [verification details](docs/verification.md).
+TypeScript checks and automated discovery, process-ownership and lifecycle tests pass. The plugin has loaded in Paseo 0.15.4; its panel, start action, preview opener, and a browser → agent → browser Steer acknowledgement have been exercised. The isolated installed-helper lifecycle also passes. Platform-specific and current development-server automation evidence is recorded separately from unit and facade-backed tests; see [verification details](docs/verification.md). A generated design variant accepted into source remains untested.
 
 The repository is public. `package.json` keeps `private: true` to prevent accidental npm publication; this does not prevent installation from GitHub or a local checkout.
 
 ## Data and trust
 
-The daemon-side plugin can access local files/processes as its user. It launches only the installed Impeccable executable, without a shell. It does not install software or publish anything. Requests, selected page content, and screenshots can reach the configured agent provider. Helper tokens remain server-side and are not package contents.
+The daemon-side plugin can access local files and processes as its user. It launches the selected existing package-manager script as structured executable arguments and starts the installed Impeccable executable. Development output is bounded, stripped of terminal controls and redacted for common credential forms before it reaches the panel. It does not install software, publish projects or deploy changes. Requests, selected page content and screenshots can reach the configured agent provider. Helper tokens remain server-side and are not package contents.
