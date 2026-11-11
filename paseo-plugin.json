@@ -2,6 +2,10 @@
   "id": "impeccable-live",
   "name": "Impeccable Live",
   "description": "Start local visual editing and deliver browser requests to your agent.",
+  "media": [
+    "docs/media/library-showcase/plugin-panel.png",
+    "docs/media/library-showcase/showcase.mp4"
+  ],
   "requirements": {
     "paseo": ">=0.15.4 <0.16.0"
   }

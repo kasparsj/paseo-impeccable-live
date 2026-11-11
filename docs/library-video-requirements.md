@@ -10,4 +10,4 @@ No duration, aspect ratio, resolution, frame rate, codec, file-size or audio lim
 
 Production choice: approximately 60 seconds (user target 50–65), 1920×1080, 30 fps, H.264 MP4, yuv420p, no audio, concise burned-in captions. These are editorial/export choices, not library rules. Keep the raw capture and edit map for alternate exports.
 
-Delivery here is local only. No manifest media declaration, upload, registry submission, publishing or deployment is authorized by this production task.
+The reviewed assets are committed for pull-request review, and `paseo-plugin.json` declares their package-relative paths in `media`. The screenshot is first, followed by the video. Registry submission, publishing and deployment have not been performed.

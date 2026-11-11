@@ -48,4 +48,4 @@ A three-second window-only probe proved `screencapture -l3730` captures just the
 
 The toolbar expands on hover and shifts controls; move onto it before choosing Pick. DESIGN.md's optional token panel can be closed for framing; this fixture has prose design context, not a generated token sidecar. Static source preview works without adding an HMR dependency. This proves the local macOS desktop/static-HTML scenario; mobile, other frameworks, and other operating systems were not exercised.
 
-Video encoding requirements and official references are in [library-video-requirements.md](library-video-requirements.md). No upload, manifest media declaration or submission was performed. The finished 62.5-second export, hashes, edit map and review are recorded in [the production runbook](library-video-production.md).
+Video encoding requirements and official references are in [library-video-requirements.md](library-video-requirements.md). The manifest declares the bundled screenshot and MP4 for the listing; no registry submission was performed. The finished 62.5-second export, hashes, edit map and review are recorded in [the production runbook](library-video-production.md).

@@ -75,4 +75,4 @@ ffmpeg -v error -i /absolute/path/output.mp4 -f null -
 ffprobe -v error -show_entries format=duration,size:stream=codec_name,width,height,r_frame_rate,pix_fmt -of json /absolute/path/output.mp4
 ```
 
-Local delivery does not submit anything. The official library supports MP4/WebM and also requires an actual-interface image for visual plugins. Publication, hosting, manifest media changes and submission remain outside this task.
+The manifest's `media` array declares the package-relative interface image first and the video second. Both are shipped through the package's `docs/` file rule. The official library supports MP4/WebM and also requires an actual-interface image for visual plugins. Publication, hosting and registry submission remain separate actions.

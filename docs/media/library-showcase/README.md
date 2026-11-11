@@ -10,4 +10,4 @@ Video SHA-256: `f46025c28717d929bd5313790319b54b373bd1a0d6b6be3d2e7d3dfbbcd07326
 
 The private continuous raw recording is intentionally not committed. Its local path and SHA-256, runtime evidence, reset instructions and rendering procedure are documented in [the production runbook](../../library-video-production.md). Editing the video requires that retained recording or a new verified capture; the committed MP4 and images can be reviewed directly.
 
-These files do not change the plugin manifest or submit anything to the Paseo library.
+The plugin manifest declares `plugin-panel.png` first as the listing thumbnail and `showcase.mp4` as the accompanying video. Both are included by the package's `docs/` file rule. This metadata does not itself submit the plugin to the Paseo library.
