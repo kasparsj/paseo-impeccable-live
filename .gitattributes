@@ -1,0 +1,2 @@
+# Unified patch context lines intentionally end with a single space.
+docs/media/library-showcase/accepted-change.patch whitespace=-blank-at-eol

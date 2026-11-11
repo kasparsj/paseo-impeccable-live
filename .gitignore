@@ -1,6 +1,9 @@
 node_modules/
 *.tgz
 .impeccable/
+!demo/library-showcase/.impeccable/
+!demo/library-showcase/.impeccable/live/
+!demo/library-showcase/.impeccable/live/config.json
 .env
 .env.*
 !.env.example
