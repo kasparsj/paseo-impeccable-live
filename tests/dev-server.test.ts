@@ -155,6 +155,31 @@ test("starts a delayed real server from split ANSI output and stops its owned pr
   }
 });
 
+test("redacts credentials after reassembling bounded stream lines", () => {
+  const logs = new DevelopmentLog();
+  logs.beginAttempt(1);
+  logs.appendChunk("stdout", "API_");
+  logs.appendChunk("stdout", "KEY=");
+  assert.equal(logs.read().lines.length, 0);
+  logs.beginAttempt(2);
+  logs.appendChunk("stderr", "token=stderr-secret\n");
+  logs.appendChunk("stdout", "split-secret\nhttp://user:");
+  logs.appendChunk("stdout", "password@localhost:4000/?access_token=split-");
+  logs.appendChunk("stdout", "url-secret\nunfinished password=last-secret");
+  logs.flushOutput();
+  const output = JSON.stringify(logs.read().lines);
+  for (const secret of ["split-secret", "stderr-secret", "password@", "url-secret", "last-secret"]) {
+    assert(!output.includes(secret), secret);
+  }
+  assert(logs.read().lines.some(line => line.text === "API_KEY=[redacted]" && line.attempt === 1));
+  assert(logs.read().lines.some(line => line.source === "stderr" && line.attempt === 2));
+  logs.appendChunk("stdout", "x".repeat(9000) + "API_KEY=");
+  logs.appendChunk("stdout", "oversized-secret\nnormal output\n");
+  assert(!JSON.stringify(logs.read()).includes("oversized-secret"));
+  assert(logs.read().truncated);
+  assert.equal(logs.read().lines.at(-1)?.text, "normal output");
+});
+
 test("uses a fallback port without disturbing an occupied listener", async () => {
   const blocker = createServer((_request, result) => { result.setHeader("content-type", "text/plain"); result.end("blocker"); });
   const occupied = await listen(blocker);
@@ -217,6 +242,25 @@ test("cancels delayed startup promptly and allows explicit owned cleanup", async
     await assert.rejects(startup, /abort|cancel/i);
     await development.stop();
     assert.equal(development.snapshot().phase, "stopped");
+  } finally {
+    await development.shutdown().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a deferred preview selection cannot restart a stopped process with changed launch metadata", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "dev-server-stale-preview-"));
+  const development = new DevelopmentServer(undefined, 2_000);
+  try {
+    const original = target(root, "serve");
+    const ready = await development.startOwned(original, undefined, new AbortController().signal);
+    assert.equal(ready.kind, "ready");
+    await development.stop();
+    const changed = { ...original, args: ["-e", "throw new Error('stale preview must never execute')"] };
+    await assert.rejects(development.startOwned(changed, ready.kind === "ready" ? ready.url : undefined,
+      new AbortController().signal, false), /ended while this preview choice was pending/);
+    assert.equal(development.snapshot().pid, null);
+    assert.equal(development.snapshot().ownership, "none");
   } finally {
     await development.shutdown().catch(() => undefined);
     await rm(root, { recursive: true, force: true });

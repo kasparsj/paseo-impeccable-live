@@ -411,6 +411,19 @@ test("preflight verifies the exact installed manager version without executing i
   } finally { restore(); }
 });
 
+test("preflight rechecks custom package-manager hooks after discovery", async () => {
+  const root = await workspace();
+  await packageFile(root, { scripts: { dev: "node dev-server.mjs" } });
+  const restore = await fakeManagers(root, ["npm"]);
+  try {
+    const result = await discoverDevelopment(root, { command: "npm", args: ["run", "dev"] });
+    assert.equal(result.kind, "resolved");
+    if (result.kind !== "resolved") return;
+    await packageFile(root, { scripts: { predev: "npm install", dev: "node dev-server.mjs" } });
+    await assert.rejects(preflightTarget(result.target, root), /unsafe script|install/i);
+  } finally { restore(); }
+});
+
 test("preflight fails closed for unverifiable Corepack shims", async () => {
   const root = await workspace();
   await packageFile(root, { packageManager: "yarn@4.1.0", scripts: { dev: "node dev-server.mjs" } });

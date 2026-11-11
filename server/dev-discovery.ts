@@ -451,7 +451,13 @@ export async function preflightTarget(target: DevelopmentTarget, workspaceRoot: 
       throw new Error("The selected preview application changed. Run discovery again.");
     }
   }
-  if (target.manager === "custom") return;
+  if (target.manager === "custom") {
+    const unsafeHook = await unsafePackageManagerHook(appRoot, target.command, target.args);
+    if (unsafeHook) {
+      throw new Error(`The selected package-manager command changed to an unsafe script (${unsafeHook}). Refresh discovery and choose again.`);
+    }
+    return;
+  }
 
   const declaration = await nearestPackageManagerDeclaration(appRoot, root);
   if (declaration && target.manager === declaration.manager) {
@@ -467,8 +473,12 @@ export async function preflightTarget(target: DevelopmentTarget, workspaceRoot: 
   if (!target.script) return;
   const app = await readPackageCandidate(root, appRoot);
   if (!app) throw new Error("The selected package.json is no longer available. Run discovery again.");
-  const body = stringScripts(app.pkg.scripts)[target.script];
+  const scripts = stringScripts(app.pkg.scripts);
+  const body = scripts[target.script];
   if (!body) throw new Error(`The selected package script “${target.script}” changed. Run discovery again.`);
+  if ([scripts[`pre${target.script}`], body, scripts[`post${target.script}`]].filter((value): value is string => Boolean(value)).some(hasForbiddenCommand)) {
+    throw new Error(`The selected package script “${target.script}” changed to an unsafe command. Refresh discovery and choose again.`);
+  }
   const runner = directWebRunner(body);
   if (runner && !(await findRunnerExecutable(runner, appRoot, root))) {
     throw new Error(`The development runner “${runner}” is not installed. Install project dependencies outside this integration, or choose an existing executable under advanced settings.`);

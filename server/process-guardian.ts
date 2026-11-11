@@ -45,6 +45,7 @@ interface PendingRequest {
  */
 async function guardianMain(): Promise<void> {
   const childProcess = process.getBuiltinModule("node:child_process");
+  const crypto = process.getBuiltinModule("node:crypto");
   const fs = process.getBuiltinModule("node:fs/promises");
   const path = process.getBuiltinModule("node:path");
   const MAX_OUTPUT = 1024 * 1024;
@@ -87,23 +88,19 @@ async function guardianMain(): Promise<void> {
       && record.args.every((arg) => typeof arg === "string") && typeof record.cwd === "string" && path.isAbsolute(record.cwd)
       && (record.timeoutMs === undefined || (Number.isSafeInteger(record.timeoutMs) && Number(record.timeoutMs) > 0 && Number(record.timeoutMs) <= 120_000));
   };
-  const hasSeparator = (value: string) => value.includes("/") || value.includes("\\");
   const isCommandScript = (value: string) => /\.(cmd|bat)$/i.test(value);
-  const quoteWindowsArgument = (value: string) => {
-    if (!/[\s"&|<>^()%!]/.test(value)) return value;
-    return `"${value.replace(/(\\*)"/g, "$1$1\\\"").replace(/(\\+)$/g, "$1$1")}"`;
-  };
   const spawnOwned = (input: { command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv }, detached: boolean) => {
-    const useShell = process.platform === "win32" && (isCommandScript(input.command) || (!hasSeparator(input.command) && !path.extname(input.command)));
-    return childProcess.spawn(useShell ? quoteWindowsArgument(input.command) : input.command,
-      useShell ? input.args.map(quoteWindowsArgument) : input.args, {
-        cwd: input.cwd,
-        env: { ...process.env, ...(input.env ?? {}) },
-        shell: useShell,
-        windowsHide: true,
-        detached,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+    if (process.platform === "win32" && isCommandScript(input.command)) {
+      throw new Error("Windows .cmd and .bat commands are unsupported; configure the executable or Node CLI entry point directly.");
+    }
+    return childProcess.spawn(input.command, input.args, {
+      cwd: input.cwd,
+      env: { ...process.env, ...(input.env ?? {}) },
+      shell: false,
+      windowsHide: true,
+      detached,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   };
   const append = (current: string, chunk: Buffer) => {
     const next = current + chunk.toString("utf8");
@@ -141,6 +138,22 @@ async function guardianMain(): Promise<void> {
     } catch { return null; }
   };
   const sameHelper = (left: { pid: number; port: number; token: string }, right: { pid: number; port: number; token: string }) => left.pid === right.pid && left.port === right.port && left.token === right.token;
+  const helperCarriesBootMarker = async (pid: number, marker: string) => {
+    const expected = `IMPECCABLE_GUARDIAN_BOOT_ID=${marker}`;
+    if (process.platform === "linux") {
+      try {
+        const environment = await fs.readFile(`/proc/${pid}/environ`, "utf8");
+        return environment.split("\0").includes(expected);
+      } catch { return false; }
+    }
+    if (process.platform === "darwin" || process.platform === "freebsd") {
+      try {
+        const result = await runCommand({ command: "ps", args: ["eww", "-p", String(pid), "-o", "command="], cwd: process.cwd(), timeoutMs: 2_000 });
+        return result.stdout.split(/\s+/).includes(expected);
+      } catch { return false; }
+    }
+    return false;
+  };
   const pidAlive = (pid: number) => {
     try { process.kill(pid, 0); return true; }
     catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
@@ -280,6 +293,9 @@ async function guardianMain(): Promise<void> {
         if (!validCommand(request.input)) throw new Error("Invalid command.");
         respond(true, await runCommand(request.input));
       } else if (request.op === "boot-helper") {
+        if (!["linux", "darwin", "freebsd"].includes(process.platform)) {
+          throw new Error("Impeccable helper automation requires a Linux, macOS or FreeBSD host so failed-startup process ownership can be verified. No helper was started.");
+        }
         if (!validCommand(request.input)) throw new Error("Invalid helper command.");
         if (helper || helperBoot) throw new Error("A helper is already owned or starting.");
         const input = request.input;
@@ -298,19 +314,59 @@ async function guardianMain(): Promise<void> {
         }
         diagnosticRoot = input.cwd;
         send({ type: "output", source: "system", text: "Helper boot started." });
-        const helperInput = { ...input, env: { ...process.env, ...(input.env ?? {}), IMPECCABLE_LAUNCHER_PROBE: "1" }, timeoutMs: input.timeoutMs ?? 30_000 };
-        helperBoot = runCommand(helperInput).then(async (result) => {
-          const boot = JSON.parse(result.stdout.trim()) as Record<string, unknown>;
-          if (boot.ok !== true) {
-            if (boot.error === "target_selection_required") throw new Error("Impeccable Live needs a concrete preview app. Choose the app from the development target choices; the launch command can remain at the workspace root.");
-            throw new Error(`Impeccable Live could not start: ${typeof boot.error === "string" ? boot.error.replace(/[_-]+/g, " ").slice(0, 200) : "preflight failed"}. Check the app's Product, Design and Live configuration.`);
-          }
-          if (!Number.isSafeInteger(boot.serverPort) || typeof boot.serverToken !== "string") throw new Error("Helper boot returned an invalid identity.");
+        const bootMarker = crypto.randomBytes(32).toString("hex");
+        const helperInput = { ...input, env: { ...process.env, ...(input.env ?? {}), IMPECCABLE_LAUNCHER_PROBE: "1", IMPECCABLE_GUARDIAN_BOOT_ID: bootMarker }, timeoutMs: input.timeoutMs ?? 30_000 };
+        const claimBootRecord = async () => {
           const record = await readHelper(input.cwd);
-          if (!record || record.port !== Number(boot.serverPort) || record.token !== boot.serverToken) throw new Error("Helper boot identity did not match its record.");
+          if (!record) return false;
+          if (!await helperCarriesBootMarker(record.pid, bootMarker)) {
+            await diagnose("boot record did not carry the owned attempt marker; refusing adoption");
+            return false;
+          }
           helper = { ...record, command: input.command, baseArgs: input.args.slice(0, liveIndex), cwd: input.cwd, env: helperInput.env };
-          return result;
-        });
+          return true;
+        };
+        helperBoot = (async () => {
+          try {
+            const result = await runCommand(helperInput);
+            // Claim the record before parsing the probe response. A boot attempt
+            // can create the helper and then emit malformed or mismatched output.
+            await claimBootRecord();
+            const boot = JSON.parse(result.stdout.trim()) as Record<string, unknown>;
+            if (boot.ok !== true) {
+              if (boot.error === "target_selection_required") throw new Error("Impeccable Live needs a concrete preview app. Choose the app from the development target choices; the launch command can remain at the workspace root.");
+              throw new Error(`Impeccable Live could not start: ${typeof boot.error === "string" ? boot.error.replace(/[_-]+/g, " ").slice(0, 200) : "preflight failed"}. Check the app's Product, Design and Live configuration.`);
+            }
+            if (!Number.isSafeInteger(boot.serverPort) || typeof boot.serverToken !== "string") throw new Error("Helper boot returned an invalid identity.");
+            let owned = helper as OwnedHelper | null;
+            if (!owned) {
+              // A successful probe also supplies an unguessable ownership token.
+              // Failed boots on these hosts use the per-attempt process marker.
+              const record = await readHelper(input.cwd);
+              if (record && record.port === Number(boot.serverPort) && record.token === boot.serverToken) {
+                owned = { ...record, command: input.command, baseArgs: input.args.slice(0, liveIndex), cwd: input.cwd, env: helperInput.env };
+                helper = owned;
+              }
+            }
+            if (!owned || owned.port !== Number(boot.serverPort) || owned.token !== boot.serverToken) throw new Error("Helper boot identity did not match its record.");
+            return result;
+          } catch (error) {
+            // A failed command can still have launched a detached helper. The
+            // inherited marker proves the recorded process came from this owned
+            // attempt, and stopHelper revalidates the exact identity so a later
+            // replacement remains untouched. Retain ownership if cleanup fails
+            // so shutdown can retry.
+            if (!helper) await claimBootRecord();
+            if (helper) {
+              try { await stopHelper(); }
+              catch (cleanupError) {
+                await diagnose(`failed boot cleanup: ${safeError(cleanupError)}`);
+                throw new Error(`${safeError(error)} Cleanup also failed: ${safeError(cleanupError)}`);
+              }
+            }
+            throw error;
+          }
+        })();
         try { respond(true, await helperBoot); } finally { helperBoot = null; }
       } else if (request.op === "stop-helper") {
         await helperBoot;

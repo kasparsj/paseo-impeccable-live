@@ -230,18 +230,24 @@ export class SessionCoordinator {
       abortCheck(signal);
       this.phase = "ready"; this.message = "Development server and Impeccable Live are ready.";
     };
-    const launch = async () => {
+    const launch = async (excludeRespondingOverride = false) => {
       abortCheck(signal);
       if (readOnly || this.helperReadinessError) await requireHelperReady();
-      if (!this.development.snapshot().verified) await preflightTarget(target, root);
+      const refreshed = await discoverDevelopment(root, input, signal);
+      if (refreshed.kind !== "resolved" || refreshed.target.id !== target.id) {
+        const detail = refreshed.kind === "unsupported" ? ` ${refreshed.message}` : "";
+        throw new Error(`The selected development command changed after discovery. Refresh checks and choose again.${detail}`);
+      }
+      if (!this.development.snapshot().verified) await preflightTarget(refreshed.target, root);
       abortCheck(signal);
       this.phase = "starting-server"; this.message = "Starting the development server…";
-      const result = await this.development.startOwned(target, input.url?.trim() || undefined, signal);
+      const result = await this.development.startOwned(refreshed.target,
+        excludeRespondingOverride ? undefined : input.url?.trim() || undefined, signal);
       abortCheck(signal);
       if (result.kind === "selection-required") {
         this.offer("Choose which local page to preview.", result.urls.map((url, index) => ({ id: `owned-${index}`, label: url, kind: "preview" as const,
           detail: "A verified page served by this launch.", action: async () => {
-            const verified = await this.development.startOwned(target, url, signal);
+            const verified = await this.development.startOwned(refreshed.target, url, signal, false);
             if (verified.kind !== "ready") throw new Error("The selected preview could not be verified.");
             await finish(verified.url);
           } })));
@@ -296,7 +302,7 @@ export class SessionCoordinator {
             this.development.useExternal(target, verified); await finish(verified);
           } })),
         { id: "launch", label: "Start another development server", kind: "launch" as const,
-          associated: false, recommended: false, detail: target.displayCommand, action: launch },
+          associated: false, recommended: false, detail: target.displayCommand, action: () => launch(true) },
       ], readOnly);
       return;
     }

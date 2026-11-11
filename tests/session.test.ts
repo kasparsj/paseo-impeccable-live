@@ -22,6 +22,8 @@ async function harness(devArgs: string[], control: Record<string, unknown> = {})
   const sent: string[] = [];
   let send = async (message: string) => { sent.push(message); };
   let wait: () => Promise<WaitResult> = async () => ({ status: "idle", final: null, error: null, lastMessage: null });
+  let workspaceRefreshCount = 0;
+  let workspaceRefresh = async (_count: number) => ({});
   const agent = {
     workspaceId: null as string | null,
     async refresh() { this.workspaceId = "workspace-1"; return { agent: {} }; },
@@ -30,7 +32,7 @@ async function harness(devArgs: string[], control: Record<string, unknown> = {})
   };
   let terminalEntries: Array<{ id: string; cwd: string }> = [];
   let terminalLines: string[] = [];
-  const workspace = { directory: root, async refresh() { return {}; }, terminals: { async list() { return { entries: terminalEntries, requestId: "test" }; } } };
+  const workspace = { directory: root, async refresh() { return workspaceRefresh(++workspaceRefreshCount); }, terminals: { async list() { return { entries: terminalEntries, requestId: "test" }; } } };
   const paseo = {
     workspaces: { ref: () => workspace },
     agents: { ref: () => agent },
@@ -43,6 +45,8 @@ async function harness(devArgs: string[], control: Record<string, unknown> = {})
     root, sent, paseo, coordinator, binding, input,
     setSend(next: (message: string) => Promise<void>) { send = next; },
     setWait(next: () => Promise<WaitResult>) { wait = next; },
+    setWorkspaceRefresh(next: (count: number) => Promise<object>) { workspaceRefresh = next; },
+    get workspaceRefreshCount() { return workspaceRefreshCount; },
     setTerminalEvidence(lines: string[]) { terminalEntries = [{ id: "terminal-1", cwd: root }]; terminalLines = lines; },
     async close() { await coordinator.shutdown().catch(() => undefined); await rm(root, { recursive: true, force: true }); },
   };
@@ -136,6 +140,26 @@ test("inspection identifies an associated external server but connects only afte
     assert.equal(ready.development.ownership, "external");
     assert.equal(ready.development.url, external.url);
     assert.equal(ready.session.active, true);
+  } finally {
+    await h.close();
+    await new Promise<void>(resolve => external.server.close(() => resolve()));
+  }
+});
+
+test("starting another server never attributes an explicit external URL to the owned process", async () => {
+  const external = await externalHtmlServer();
+  const h = await harness(["default", "0", "0"]);
+  try {
+    h.coordinator.inspect({ ...h.input, url: external.url }, h.paseo);
+    const choices = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "selection-required", "external and launch choices");
+    assert(choices.choices.some(choice => choice.id === "launch"));
+    h.coordinator.select({ ...h.binding, attempt: choices.attempt, selectionId: "launch" });
+    const ready = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready", "owned server chosen over external");
+    assert.equal(ready.development.ownership, "owned");
+    assert(ready.development.pid);
+    assert.notEqual(ready.development.url, external.url);
+    assert.equal((await fetch(ready.development.url!)).status, 200);
+    assert.equal((await fetch(external.url)).status, 200);
   } finally {
     await h.close();
     await new Promise<void>(resolve => external.server.close(() => resolve()));
@@ -278,6 +302,39 @@ test("discovery can be canceled while the workspace SDK call is still pending", 
   } finally { await h.close(); }
 });
 
+test("cancel aborts the second prelaunch workspace refresh", async () => {
+  const h = await harness(["default", "0", "0"]);
+  h.setWorkspaceRefresh(async count => count === 1 ? {} : new Promise(() => {}));
+  try {
+    h.coordinator.start(h.input, h.paseo);
+    await eventually(() => h.workspaceRefreshCount, count => count >= 2, "second workspace refresh started");
+    h.coordinator.stopSession(h.binding);
+    const stopped = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "stopped", "prelaunch refresh cancellation");
+    assert.equal(stopped.development.ownership, "none");
+    assert.equal(stopped.session.active, false);
+    await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
+  } finally { await h.close(); }
+});
+
+test("cancel aborts a postlaunch workspace refresh and cleans the owned development process", async () => {
+  const h = await harness(["default", "0", "0"]);
+  h.setWorkspaceRefresh(async count => count < 3 ? {} : new Promise(() => {}));
+  try {
+    h.coordinator.start(h.input, h.paseo);
+    const launched = await eventually(() => h.coordinator.status(h.binding), state =>
+      h.workspaceRefreshCount >= 3 && state.development.ownership === "owned" && state.development.verified,
+    "owned server before postlaunch refresh cancellation");
+    const url = launched.development.url!;
+    h.coordinator.stopDevelopment(h.binding);
+    const stopped = await eventually(() => h.coordinator.status(h.binding), state =>
+      state.phase === "stopped" && state.development.phase === "stopped",
+    "postlaunch refresh cleanup");
+    assert.equal(stopped.development.ownership, "none");
+    assert.equal(stopped.session.active, false);
+    await assert.rejects(fetch(url));
+  } finally { await h.close(); }
+});
+
 test("canceling helper startup against an external server leaves the external app running", async () => {
   const external = await externalHtmlServer();
   const h = await harness(["default", "0", "0"], { bootDelayMs: 300 });
@@ -411,6 +468,26 @@ test("explicit start rechecks edited target readiness before launching a develop
     assert.equal(failed.development.ownership, "none");
     assert.equal(failed.development.pid, null);
     await assert.rejects(readFile(path.join(app, ".fixture-state.json")));
+  } finally { await h.close(); }
+});
+
+test("connect rejects a development script that becomes mutating after inspection", async () => {
+  const h = await harness(["default", "0", "0"]);
+  const automatic = { ...h.input, command: undefined, args: undefined };
+  try {
+    await writeFile(path.join(h.root, "package.json"), JSON.stringify({ scripts: { dev: "vite" } }));
+    h.coordinator.inspect(automatic, h.paseo);
+    const inspected = await eventually(() => h.coordinator.status(h.binding), state =>
+      (state.phase === "idle" || state.phase === "selection-required") && state.choices.some(choice => choice.id === "launch"),
+    "safe script inspected");
+
+    await writeFile(path.join(h.root, "package.json"), JSON.stringify({ scripts: { predev: "npm install", dev: "vite" } }));
+    h.coordinator.select({ ...h.binding, attempt: inspected.attempt, selectionId: "launch" });
+    const rejected = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "error", "mutating script rejected");
+    assert.match(rejected.message, /changed after discovery|unsafe/i);
+    assert.equal(rejected.development.ownership, "none");
+    assert.equal(rejected.development.pid, null);
+    await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
   } finally { await h.close(); }
 });
 

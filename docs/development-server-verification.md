@@ -71,9 +71,9 @@ Fresh evidence:
 - `node --experimental-strip-types evidence/development-server-lifecycle.ts --monorepo` passed against the installed engine. Its root Node process served `frontend/index.html`; Product/Design records were at the temporary Git root, while helper state and injection stayed in the frontend. Resume, stop and shutdown checks passed without agent messages or dependencies being installed.
 - The actual UniMeet panel was resumed with `matching-platform — dev → frontend` and its full-stack root command. The existing server on 5173 was left alone; the owned Vite server chose 5174. The helper's persisted `roots.appRoot` was `/Users/kasparsj/Work2/unimeet/matching-platform/frontend`. HTTP 5174 returned 200 with live injection, the existing 5173 server still returned 200, and Paseo automatically opened UniMeet with working Impeccable controls. The user's development session was left running for use.
 
-## Existing-server reuse follow-up
+## Existing-server reuse follow-up (historical, before panel UX changes)
 
-After the owned UniMeet session was stopped, reopening the panel showed its retained stopped status. Selecting **Start / resume** reran discovery and offered **Reuse http://localhost:5173/**. Selecting that option reused the existing server and automatically opened UniMeet with Impeccable controls at port 5173. No additional development process was launched. Opening the panel alone does not trigger discovery.
+After the owned UniMeet session was stopped, reopening the panel showed its retained stopped status. Selecting **Start / resume** reran discovery and offered **Reuse http://localhost:5173/**. Selecting that option reused the existing server and automatically opened UniMeet with Impeccable controls at port 5173. No additional development process was launched. At that revision, opening the panel alone did not trigger discovery. The subsequent panel UX follow-up adds read-only discovery on opening; see [the current panel verification](panel-ux-verification.md).
 
 ## Verification process deviation
 

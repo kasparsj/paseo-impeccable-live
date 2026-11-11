@@ -258,7 +258,8 @@ export class LiveBridge {
 
     const current = await readHelperRecord(run.appRoot);
     if (current.kind === "missing") {
-      await runJsonCommand(run.cliPath, ["live-inject", "--remove"], run.appRoot);
+      if (this.lifecycle) await this.stopHelper(run);
+      else await runJsonCommand(run.cliPath, ["live-inject", "--remove"], run.appRoot);
       this.active = null;
       this.publicStatus = statusOf("stopped", "Impeccable Live was already stopped; its injection was removed and journals were retained.", run);
       return this.snapshot();
@@ -298,7 +299,8 @@ export class LiveBridge {
           }
         } else if (current.kind === "missing") {
           try {
-            await runJsonCommand(run.cliPath, ["live-inject", "--remove"], run.appRoot);
+            if (this.lifecycle) await this.stopHelper(run);
+            else await runJsonCommand(run.cliPath, ["live-inject", "--remove"], run.appRoot);
           } catch {
             this.publicStatus = statusOf("error", "The live session ended, but injection cleanup failed. Stop the run explicitly.", run);
             return;
@@ -364,14 +366,17 @@ export class LiveBridge {
 
 export async function resolveRunBinding(input: StartInput, paseo: PaseoApi): Promise<RunBinding> {
   const workspace = paseo.workspaces.ref(input.workspaceId);
-  const refreshedWorkspace = await workspace.refresh();
+  const signal = input.signal ?? new AbortController().signal;
+  const refreshedWorkspace = await abortable(
+    () => workspace.refresh(), signal, 30_000, "The selected workspace did not refresh in time.",
+  );
   if (!refreshedWorkspace || !workspace.directory) throw safeError("The selected workspace has no available directory.");
   const workspaceRoot = await realpath(workspace.directory);
   const workspaceStats = await stat(workspaceRoot);
   if (!workspaceStats.isDirectory()) throw safeError("The selected workspace directory is unavailable.");
 
   const agent = paseo.agents.ref(input.agentId);
-  await boundedRefreshBoundAgent(agent, input.workspaceId, input.signal);
+  await boundedRefreshBoundAgent(agent, input.workspaceId, signal);
   const appRoot = input.exactAppRoot ? await resolveContainedDirectory(workspaceRoot, input.appPath) : await resolveAppRoot(workspaceRoot, input.appPath);
   const url = validateLocalUrl(input.url);
   const cliPath = await resolveCliPath(input.cliPath);
@@ -407,6 +412,9 @@ async function isFrontendDirectory(directory: string): Promise<boolean> {
 }
 
 export async function resolveCliPath(override?: string): Promise<string> {
+  if (!["linux", "darwin", "freebsd"].includes(process.platform)) {
+    throw safeError("Impeccable helper automation requires a Linux, macOS or FreeBSD host so failed-startup process ownership can be verified. Use Paseo on a supported development host.");
+  }
   const candidates = override
     ? [override]
     : [path.join(homedir(), ".agents/skills/impeccable/scripts/impeccable"), path.join(homedir(), ".codex/skills/impeccable/scripts/impeccable")];

@@ -36,12 +36,19 @@ if (mode === "dev") {
   const delay = Number(process.env.GUARDIAN_BOOT_DELAY_MS ?? 0);
   if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
   await mkdir(path.dirname(recordPath), { recursive: true });
-  const daemon = spawn(process.execPath, [new URL(import.meta.url).pathname, "helper-daemon"], { detached: true, stdio: "ignore" });
+  const outcome = process.env.GUARDIAN_BOOT_OUTCOME;
+  const daemonEnv = outcome === "foreign" ? Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "IMPECCABLE_GUARDIAN_BOOT_ID")) : process.env;
+  const daemon = spawn(process.execPath, [new URL(import.meta.url).pathname, "helper-daemon"], { detached: true, env: daemonEnv, stdio: "ignore" });
   daemon.unref();
   const helper = { pid: daemon.pid, port: 8456, token: "guardian-fixture-token" };
   await writeFile(recordPath, JSON.stringify(helper));
   await writeFile(path.join(cwd, ".guardian-helper.pid"), String(helper.pid));
-  process.stdout.write(JSON.stringify({ ok: true, serverPort: helper.port, serverToken: helper.token }));
+  if (outcome === "malformed") process.stdout.write("not-json");
+  else if (outcome === "fail") process.exitCode = 7;
+  else if (outcome === "timeout") setInterval(() => {}, 60_000);
+  else if (outcome === "mismatch") process.stdout.write(JSON.stringify({ ok: true, serverPort: helper.port, serverToken: "mismatched-token" }));
+  else if (outcome === "foreign") process.stdout.write("not-json");
+  else process.stdout.write(JSON.stringify({ ok: true, serverPort: helper.port, serverToken: helper.token }));
 } else if (mode === "live-server" && args[0] === "stop") {
   const record = JSON.parse(await readFile(recordPath, "utf8"));
   if (process.env.GUARDIAN_STOP_LEAVES_ALIVE !== "1") {

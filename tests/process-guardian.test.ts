@@ -1,13 +1,26 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { ProcessGuardian } from "../server/process-guardian.ts";
 
 const fixture = path.resolve("tests/guardian-fixture.mjs");
+const helperHostSupported = ["linux", "darwin", "freebsd"].includes(process.platform);
 const exists = (file: string) => access(file).then(() => true, () => false);
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test("unsupported helper hosts reject boot before creating helper state", { skip: helperHostSupported }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "guardian-unsupported-helper-"));
+  const guardian = new ProcessGuardian();
+  try {
+    await assert.rejects(guardian.bootHelper({ command: process.execPath, args: [fixture, "live"], cwd: root }), /No helper was started/);
+    assert.equal(await exists(path.join(root, ".impeccable/live/server.json")), false);
+  } finally {
+    await guardian.shutdown().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
 async function eventually(check: () => boolean | Promise<boolean>, label: string, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -70,7 +83,7 @@ test("reaps descendants when the development parent exits first", { skip: proces
   }
 });
 
-test("owns a verified helper and refuses to stop a replacement", async () => {
+test("owns a verified helper and refuses to stop a replacement", { skip: !helperHostSupported }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "guardian-helper-"));
   const guardian = new ProcessGuardian();
   try {
@@ -90,7 +103,7 @@ test("owns a verified helper and refuses to stop a replacement", async () => {
   }
 });
 
-test("supports an explicit helper app target without forwarding boot flags to stop", async () => {
+test("supports an explicit helper app target without forwarding boot flags to stop", { skip: !helperHostSupported }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "guardian-explicit-target-"));
   const guardian = new ProcessGuardian();
   try {
@@ -106,7 +119,81 @@ test("supports an explicit helper app target without forwarding boot flags to st
   }
 });
 
-test("retains helper ownership when its record disappears while the process is live", async () => {
+test("refuses to adopt a helper record that predates boot", { skip: !helperHostSupported }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "guardian-preexisting-helper-"));
+  const recordPath = path.join(root, ".impeccable/live/server.json");
+  const guardian = new ProcessGuardian();
+  try {
+    await mkdir(path.dirname(recordPath), { recursive: true });
+    await writeFile(recordPath, JSON.stringify({ pid: process.pid, port: 8456, token: "external-helper" }));
+    await assert.rejects(guardian.bootHelper({ command: process.execPath, args: [fixture, "live"], cwd: root }), /record already exists/);
+    assert.equal(JSON.parse(await readFile(recordPath, "utf8")).token, "external-helper");
+  } finally {
+    await guardian.shutdown().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const outcome of ["malformed", "fail", "timeout", "mismatch"] as const) {
+  test(`cleans the attributable helper when boot ${outcome === "fail" ? "exits unsuccessfully" : `returns ${outcome}`}`, { skip: !helperHostSupported }, async () => {
+    const root = await mkdtemp(path.join(tmpdir(), `guardian-boot-${outcome}-`));
+    const guardian = new ProcessGuardian();
+    try {
+      await assert.rejects(guardian.bootHelper({
+        command: process.execPath,
+        args: [fixture, "live"],
+        cwd: root,
+        env: { ...process.env, GUARDIAN_BOOT_OUTCOME: outcome },
+        timeoutMs: outcome === "timeout" ? 500 : 5_000,
+      }), outcome === "timeout" ? /timed out/ : /JSON|code 7|identity/i);
+      const helperPid = Number(await readFile(path.join(root, ".guardian-helper.pid"), "utf8"));
+      await eventually(() => !alive(helperPid), `${outcome} helper process exit`);
+      assert.equal(await exists(path.join(root, ".impeccable/live/server.json")), false);
+      assert.equal(await exists(path.join(root, ".guardian-stopped")), true);
+    } finally {
+      await guardian.shutdown().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("rejects shell-based Windows command scripts", { skip: process.platform !== "win32" }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "guardian-windows-script-"));
+  const guardian = new ProcessGuardian();
+  try {
+    await assert.rejects(guardian.command({ command: path.join(root, "fixture.cmd"), args: ["& calc.exe"], cwd: root }), /\.cmd and \.bat commands are unsupported/);
+  } finally {
+    await guardian.shutdown().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("does not adopt a foreign helper record that appears during a failed boot", { skip: !helperHostSupported }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "guardian-foreign-during-boot-"));
+  const recordPath = path.join(root, ".impeccable/live/server.json");
+  const guardian = new ProcessGuardian();
+  let helperPid: number | null = null;
+  try {
+    await assert.rejects(guardian.bootHelper({
+      command: process.execPath,
+      args: [fixture, "live"],
+      cwd: root,
+      env: { ...process.env, GUARDIAN_BOOT_OUTCOME: "foreign" },
+    }), /JSON/);
+    helperPid = Number(await readFile(path.join(root, ".guardian-helper.pid"), "utf8"));
+    assert.equal(alive(helperPid), true);
+    assert.equal(await exists(recordPath), true);
+    assert.equal(await exists(path.join(root, ".guardian-stopped")), false);
+  } finally {
+    if (helperPid && alive(helperPid)) process.kill(helperPid, "SIGTERM");
+    await eventually(() => !helperPid || !alive(helperPid), "foreign fixture helper exit");
+    await rm(recordPath, { force: true });
+    await guardian.shutdown().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("retains helper ownership when its record disappears while the process is live", { skip: !helperHostSupported }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "guardian-missing-record-"));
   const guardian = new ProcessGuardian();
   try {
@@ -129,7 +216,7 @@ test("retains helper ownership when its record disappears while the process is l
   }
 });
 
-test("retains helper ownership when its stop command removes the record but leaves the process", async () => {
+test("retains helper ownership when its stop command removes the record but leaves the process", { skip: !helperHostSupported }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "guardian-incomplete-stop-"));
   const guardian = new ProcessGuardian();
   try {
@@ -153,7 +240,7 @@ test("retains helper ownership when its stop command removes the record but leav
   }
 });
 
-test("refuses an invalid helper record without losing ownership", async () => {
+test("refuses an invalid helper record without losing ownership", { skip: !helperHostSupported }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "guardian-invalid-record-"));
   const guardian = new ProcessGuardian();
   try {
@@ -173,7 +260,7 @@ test("refuses an invalid helper record without losing ownership", async () => {
   }
 });
 
-test("cleans a helper whose delayed boot finishes after parent IPC disconnect", async () => {
+test("cleans a helper whose delayed boot finishes after parent IPC disconnect", { skip: !helperHostSupported }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "guardian-disconnect-"));
   const output: string[] = [];
   const guardian = new ProcessGuardian({ onOutput: (_source, text) => output.push(text) });

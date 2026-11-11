@@ -62,3 +62,5 @@ The repository is public. `package.json` keeps `private: true` to prevent accide
 ## Data and trust
 
 The daemon-side plugin can access local files and processes as its user. It launches the selected existing package-manager script as structured executable arguments and starts the installed Impeccable executable. Development output is bounded, stripped of terminal controls and redacted for common credential forms before it reaches the panel. It does not install software, publish projects or deploy changes. Requests, selected page content and screenshots can reach the configured agent provider. Helper tokens remain server-side and are not package contents.
+
+Helper automation requires a Linux, macOS or FreeBSD development host. These hosts allow the guardian to verify a boot-specific process marker and clean up partial failed starts without adopting unrelated helpers. Other hosts fail readiness before starting a development process or helper. Windows `.cmd` and `.bat` launches are refused; shell interpolation is never used. Windows runtime support is not claimed for this release.
