@@ -93,3 +93,32 @@ export function previewAttemptToOpen(
   if (status.phase !== "ready" || !status.development.verified || !status.development.url || !status.session.active) return null;
   return status.attempt;
 }
+
+export type PanelView = "idle" | "discovering" | "selection" | "starting" | "connected" | "error";
+
+export function panelView(status: SessionStatus | undefined, inspecting = false): PanelView {
+  if (!status) return inspecting ? "discovering" : "idle";
+  if (status.phase === "discovering") return "discovering";
+  if (canCancelSessionStartup(status.phase) || status.phase === "stopping") return "starting";
+  if (status.phase === "error" || status.development.phase === "error" || ["error", "ownership-lost"].includes(status.session.phase)) return "error";
+  if (status.development.verified && status.session.active) return "connected";
+  if (status.choices.length > 1) return "selection";
+  return "idle";
+}
+
+export function validatePanelFields(config: PanelConfig): Partial<Record<"appPath" | "url" | "cliPath", string>> {
+  const errors: ReturnType<typeof validatePanelFields> = {};
+  if (/^(?:[/\\]|[a-z]:)/i.test(config.appPath.trim()) || config.appPath.split(/[/\\]/).includes("..")) {
+    errors.appPath = "Use a folder within this workspace, for example frontend.";
+  }
+  if (config.cliPath.trim() && !/^(?:[/\\]|[a-z]:[/\\])/i.test(config.cliPath.trim())) {
+    errors.cliPath = "Use the absolute path to the installed Impeccable executable.";
+  }
+  if (config.url.trim()) {
+    try {
+      const url = new URL(config.url.trim());
+      if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.username || url.password) throw new Error();
+    } catch { errors.url = "Use a local HTTP URL, for example http://localhost:5173/."; }
+  }
+  return errors;
+}

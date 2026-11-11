@@ -25,11 +25,16 @@ export const developmentOverridesSchema = z.object({
   selectionId: z.string().max(256).optional(),
 });
 
-export const choiceSchema = z.object({ id: z.string(), label: z.string(), detail: z.string(), persistSelection: z.boolean().optional() });
+export const choiceSchema = z.object({
+  id: z.string(), label: z.string(), detail: z.string(), persistSelection: z.boolean().optional(),
+  kind: z.enum(["target", "reuse", "launch", "preview"]).optional(),
+  associated: z.boolean().optional(), recommended: z.boolean().optional(),
+});
 export const developmentStatusSchema = z.object({
   phase: z.enum(["stopped", "discovering", "selection-required", "starting", "verifying", "ready", "error", "stopping"]),
   ownership: z.enum(["none", "owned", "external"]),
   appRoot: z.string().nullable(),
+  previewRoot: z.string().nullable().optional(),
   command: z.string().nullable(),
   url: z.string().nullable(),
   verified: z.boolean(),
@@ -40,6 +45,7 @@ export const sessionStatusSchema = z.object({
   attempt: z.number().int(),
   phase: z.string(),
   message: z.string(),
+  helperReadinessError: z.string().nullable().optional(),
   choices: z.array(choiceSchema),
   development: developmentStatusSchema,
   session: liveStatusSchema,
@@ -47,6 +53,12 @@ export const sessionStatusSchema = z.object({
 
 export const startRpc = defineRpc({
   name: "impeccable-live.start",
+  input: liveBindingSchema.extend(developmentOverridesSchema.shape),
+  output: sessionStatusSchema,
+});
+
+export const inspectRpc = defineRpc({
+  name: "impeccable-live.inspect",
   input: liveBindingSchema.extend(developmentOverridesSchema.shape),
   output: sessionStatusSchema,
 });
@@ -83,8 +95,8 @@ export const devLogsRpc = defineRpc({
   name: "impeccable-live.logs",
   input: liveBindingSchema.extend({ cursor: z.number().int().nonnegative().optional() }),
   output: z.object({
-    lines: z.array(z.object({ sequence: z.number(), source: z.enum(["stdout", "stderr", "system"]), text: z.string(), time: z.string() })),
-    cursor: z.number(), reset: z.boolean(), truncated: z.boolean(), available: z.boolean(),
+    lines: z.array(z.object({ sequence: z.number(), attempt: z.number().int(), source: z.enum(["stdout", "stderr", "system"]), text: z.string(), time: z.string() })),
+    cursor: z.number(), attempt: z.number().int(), reset: z.boolean(), truncated: z.boolean(), available: z.boolean(),
   }),
 });
 

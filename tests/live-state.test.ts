@@ -50,6 +50,7 @@ function readyStatus(attempt: number): SessionStatus {
   return {
     attempt,
     phase: "ready",
+    helperReadinessError: null,
     message: "Ready",
     choices: [],
     development: {
@@ -70,4 +71,31 @@ test("automatic preview opens once and only for a locally initiated ready attemp
   assert.equal(previewAttemptToOpen(status, 7, null), 7);
   assert.equal(previewAttemptToOpen(status, 7, 7), null);
   assert.equal(previewAttemptToOpen({ ...status, development: { ...status.development, verified: false } }, 7, null), null);
+});
+
+test("panel uses one state-appropriate action across lifecycle and helper errors", async () => {
+  const { panelView } = await import("../client/live-state.ts");
+  const status = readyStatus(1);
+  assert.equal(panelView(undefined, true), "discovering");
+  assert.equal(panelView(status), "connected");
+  assert.equal(panelView({ ...status, phase: "starting-impeccable" }), "starting");
+  assert.equal(panelView({ ...status, phase: "discovering" }), "discovering");
+  assert.equal(panelView({ ...status, phase: "discovering", development: { ...status.development, phase: "error" } }), "discovering");
+  assert.equal(panelView({ ...status, phase: "starting-server", development: { ...status.development, phase: "error" } }), "starting");
+  assert.equal(panelView({ ...status, session: { ...status.session, phase: "ownership-lost" } }), "error");
+  const stopped = { ...status, phase: "idle", session: { ...status.session, active: false } };
+  assert.equal(panelView(stopped), "idle");
+  assert.equal(panelView({ ...stopped, development: { ...stopped.development, phase: "error" } }), "error");
+  assert.equal(panelView({ ...stopped, choices: [{ id: "a", label: "A", detail: "" }, { id: "b", label: "B", detail: "" }] }), "selection");
+});
+
+test("field errors keep invalid overrides local before a connection request", async () => {
+  const { validatePanelFields } = await import("../client/live-state.ts");
+  assert.deepEqual(validatePanelFields(defaultPanelConfig), {});
+  assert.deepEqual(validatePanelFields({ ...defaultPanelConfig, cliPath: "C:\\tools\\impeccable.cmd" }), {});
+  assert.deepEqual(validatePanelFields({ ...defaultPanelConfig, appPath: "frontend", url: "http://[::1]:5173/", cliPath: "/tmp/impeccable" }), {});
+  const errors = validatePanelFields({ ...defaultPanelConfig, appPath: "../app", url: "https://example.com", cliPath: "./impeccable" });
+  assert.deepEqual(Object.keys(errors).sort(), ["appPath", "cliPath", "url"]);
+  assert(validatePanelFields({ ...defaultPanelConfig, url: "http://user:pass@localhost/" }).url);
+  assert(validatePanelFields({ ...defaultPanelConfig, url: "https://localhost/" }).url);
 });

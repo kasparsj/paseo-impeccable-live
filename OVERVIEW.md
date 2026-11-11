@@ -1,6 +1,6 @@
 # Impeccable Live
 
-A panel for starting Impeccable Live in a local web project. Open it from an agent with `/impeccable-live` or the Command Center action **Open Impeccable Live**, then select **Start / resume**. The plugin discovers the app, package manager and development command, starts or reuses the development server, verifies its local URL, starts Impeccable and opens the preview in Paseo Desktop. It asks for a choice only when discovery is ambiguous.
+A panel for starting Impeccable Live in a local web project. Open it from an agent with `/impeccable-live` or the Command Center action **Open Impeccable Live**, then select **Connect and open preview**. Opening the panel checks the app, local servers and helper readiness without starting processes. Connection starts or reuses the selected development server, verifies its local URL, starts Impeccable and opens the preview in Paseo Desktop. Servers without an established app association require an explicit choice. Startup can be canceled; connected sessions offer **Open preview**.
 
 Impeccable supplies element picking, visual variants and annotations. The plugin listens for browser requests in the background and sends them to the agent attached to the panel, so the chat does not need to stay in a polling turn. Advanced settings contain app, executable, structured JSON arguments, URL and Impeccable executable overrides.
 

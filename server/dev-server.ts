@@ -5,7 +5,7 @@ import { ProcessGuardian } from "./process-guardian.ts";
 import { checkAbort, deadlineSignal } from "./abort.ts";
 
 type Source = "stdout" | "stderr" | "system";
-export interface LogLine { sequence: number; source: Source; text: string; time: string }
+export interface LogLine { sequence: number; attempt: number; source: Source; text: string; time: string }
 const MAX_BYTES = 128 * 1024;
 const MAX_LINES = 500;
 
@@ -23,6 +23,9 @@ export class DevelopmentLog {
   private sequence = 0;
   private bytes = 0;
   private dropped = false;
+  private attempt = 0;
+
+  beginAttempt(attempt: number): void { this.attempt = attempt; }
 
   append(source: Source, text: string): void {
     if (Buffer.byteLength(text) > MAX_BYTES) { text = Buffer.from(text).subarray(-MAX_BYTES).toString("utf8"); this.dropped = true; }
@@ -30,7 +33,7 @@ export class DevelopmentLog {
       if (!raw) continue;
       const line = Buffer.from(raw).subarray(-8192).toString("utf8");
       if (line !== raw) this.dropped = true;
-      this.lines.push({ sequence: ++this.sequence, source, text: line, time: new Date().toISOString() });
+      this.lines.push({ sequence: ++this.sequence, attempt: this.attempt, source, text: line, time: new Date().toISOString() });
       this.bytes += Buffer.byteLength(line);
       while (this.lines.length > MAX_LINES || this.bytes > MAX_BYTES) {
         this.bytes -= Buffer.byteLength(this.lines.shift()!.text); this.dropped = true;
@@ -41,7 +44,7 @@ export class DevelopmentLog {
   read(cursor = 0, available = true) {
     const first = this.lines[0]?.sequence ?? this.sequence + 1;
     const reset = cursor > this.sequence || (cursor > 0 && cursor < first - 1);
-    return { lines: this.lines.filter(line => reset || line.sequence > cursor), cursor: this.sequence,
+    return { lines: this.lines.filter(line => reset || line.sequence > cursor), cursor: this.sequence, attempt: this.attempt,
       reset, truncated: this.dropped, available };
   }
 }
@@ -132,7 +135,7 @@ export class DevelopmentServer {
       onOutput: (source, text) => this.output(source, text),
       onExit: (code, signal) => {
         this.exited = true;
-        this.set({ phase: "error", verified: false, message: `Development server exited (${signal ?? code ?? "unknown"}). Use Start / resume to retry.` });
+        this.set({ phase: "error", verified: false, message: `Development server exited (${signal ?? code ?? "unknown"}). Use Connect again to retry.` });
         this.logs.append("system", this.state.message);
       },
     });
@@ -140,7 +143,21 @@ export class DevelopmentServer {
   }
 
   snapshot(): DevelopmentStatus { return { ...this.state }; }
+  describe(target: DevelopmentTarget, url: string | null = null): void {
+    if (this.state.ownership !== "none") return;
+    this.set({ phase: "stopped", appRoot: target.appRoot, previewRoot: target.previewRoot ?? target.appRoot,
+      command: target.displayCommand, url, verified: false,
+      message: "Ready to connect to the selected application." });
+  }
   matchesTarget(target: DevelopmentTarget): boolean { return this.targetId === target.id; }
+  releaseExternal(): void {
+    if (this.state.ownership !== "external") return;
+    this.generation++;
+    this.stopHealth();
+    this.targetId = null;
+    this.state = stoppedDevelopment();
+    this.changed();
+  }
   mark(phase: DevelopmentStatus["phase"], message: string): void { this.set({ phase, message }); }
   private set(patch: Partial<DevelopmentStatus>): void { this.state = { ...this.state, ...patch }; this.changed(); }
 
@@ -159,7 +176,7 @@ export class DevelopmentServer {
     this.targetId = target.id;
     this.generation++;
     this.stopHealth();
-    this.set({ phase: "ready", ownership: "external", appRoot: target.appRoot, command: target.displayCommand,
+    this.set({ phase: "ready", ownership: "external", appRoot: target.appRoot, previewRoot: target.previewRoot ?? target.appRoot, command: target.displayCommand,
       url: validateLocalUrl(url), verified: true, pid: null,
       message: logsAvailable ? "Reusing a development server started outside this plugin." : "Reusing an external development server. Its output is not available here." });
     this.logs.append("system", this.state.message);
@@ -174,7 +191,7 @@ export class DevelopmentServer {
     checkAbort(signal);
     if (!this.state.pid || this.exited) {
       this.urls.clear(); this.partial = { stdout: "", stderr: "" }; this.exited = false;
-      this.set({ phase: "starting", ownership: "owned", appRoot: target.appRoot, command: target.displayCommand,
+      this.set({ phase: "starting", ownership: "owned", appRoot: target.appRoot, previewRoot: target.previewRoot ?? target.appRoot, command: target.displayCommand,
         url: null, verified: false, pid: null, message: `Starting ${target.displayCommand}…` });
       this.logs.append("system", this.state.message);
       const started = await this.guardian.startDevelopment({ command: target.command, args: target.args, cwd: target.appRoot,
@@ -237,7 +254,7 @@ export class DevelopmentServer {
       this.healthBusy = true;
       void probeLocalUrl(this.state.url, signal).catch(() => {
         if (generation === this.generation && !signal.aborted) this.set({ phase: "error", verified: false,
-          message: "The development server is no longer reachable. Use Start / resume to reconnect." });
+          message: "The development server is no longer reachable. Use Connect again to reconnect." });
       }).finally(() => { this.healthBusy = false; });
     }, 5000);
     this.health.unref();
@@ -261,7 +278,7 @@ export class DevelopmentServer {
     catch (error) { this.fail(error); throw error; }
     this.exited = false;
     this.targetId = null;
-    this.state = { ...stoppedDevelopment(), appRoot: this.state.appRoot, command: this.state.command };
+    this.state = { ...stoppedDevelopment(), appRoot: this.state.appRoot, previewRoot: this.state.previewRoot, command: this.state.command };
     this.logs.append("system", this.state.message); this.changed();
   }
 

@@ -14,6 +14,10 @@ type WaitResult = { status: "idle" | "error" | "permission" | "timeout"; final: 
 async function harness(devArgs: string[], control: Record<string, unknown> = {}) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "impeccable-session-")));
   await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "session-fixture", private: true }));
+  await writeFile(path.join(root, "PRODUCT.md"), "# Product\n");
+  await writeFile(path.join(root, "DESIGN.md"), "# Design\n");
+  await mkdir(path.join(root, ".impeccable", "live"), { recursive: true });
+  await writeFile(path.join(root, ".impeccable", "live", "config.json"), "{}\n");
   await writeFile(path.join(root, ".fixture-control.json"), JSON.stringify({ events: [{ type: "wait" }], ...control }));
   const sent: string[] = [];
   let send = async (message: string) => { sent.push(message); };
@@ -24,11 +28,13 @@ async function harness(devArgs: string[], control: Record<string, unknown> = {})
     async send(message: string) { return send(message); },
     async waitForFinish() { return wait(); },
   };
-  const workspace = { directory: root, async refresh() { return {}; }, terminals: { async list() { return { entries: [], requestId: "test" }; } } };
+  let terminalEntries: Array<{ id: string; cwd: string }> = [];
+  let terminalLines: string[] = [];
+  const workspace = { directory: root, async refresh() { return {}; }, terminals: { async list() { return { entries: terminalEntries, requestId: "test" }; } } };
   const paseo = {
     workspaces: { ref: () => workspace },
     agents: { ref: () => agent },
-    terminals: { ref: () => ({ async capture() { return { lines: [], totalLines: 0, terminalId: "test", requestId: "test" }; } }) },
+    terminals: { ref: () => ({ async capture() { return { lines: terminalLines, totalLines: terminalLines.length, terminalId: "test", requestId: "test" }; } }) },
   } as unknown as PaseoApi;
   const coordinator = new SessionCoordinator({ startupMs: 5_000 });
   const binding = { workspaceId: "workspace-1", agentId: "agent-1" };
@@ -37,6 +43,7 @@ async function harness(devArgs: string[], control: Record<string, unknown> = {})
     root, sent, paseo, coordinator, binding, input,
     setSend(next: (message: string) => Promise<void>) { send = next; },
     setWait(next: () => Promise<WaitResult>) { wait = next; },
+    setTerminalEvidence(lines: string[]) { terminalEntries = [{ id: "terminal-1", cwd: root }]; terminalLines = lines; },
     async close() { await coordinator.shutdown().catch(() => undefined); await rm(root, { recursive: true, force: true }); },
   };
 }
@@ -61,12 +68,12 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
-async function externalHtmlServer(): Promise<{ server: Server; url: string }> {
+async function externalHtmlServer(port = 0): Promise<{ server: Server; url: string }> {
   const server = createServer((_request, response) => {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end("<!doctype html><title>External</title>");
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
   const address = server.address();
   assert(address && typeof address !== "string");
   return { server, url: `http://127.0.0.1:${address.port}/` };
@@ -90,12 +97,148 @@ test("starts asynchronously, stays responsive, deduplicates Start, and boots hel
   } finally { await h.close(); }
 });
 
+test("read-only inspection discovers a launch without starting the development server or helper", async () => {
+  const h = await harness(["default", "0", "0"]);
+  try {
+    const inspecting = h.coordinator.inspect(h.input, h.paseo);
+    assert.equal(inspecting.phase, "discovering");
+    const idle = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "idle", "read-only inspection");
+    assert.deepEqual(idle.choices.map(choice => [choice.id, choice.kind]), [["launch", "launch"]]);
+    assert.equal(idle.development.ownership, "none");
+    assert.equal(idle.development.appRoot, h.root);
+    assert.equal(idle.development.command?.includes(process.execPath), true);
+    await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
+
+    h.coordinator.select({ ...h.binding, attempt: idle.attempt, selectionId: "launch" });
+    const ready = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready", "explicit launch after inspection");
+    assert.equal(ready.development.ownership, "owned");
+    assert.equal(ready.session.active, true);
+  } finally { await h.close(); }
+});
+
+test("inspection identifies an associated external server but connects only after explicit selection", async () => {
+  const external = await externalHtmlServer();
+  const h = await harness(["default", "0", "0"]);
+  try {
+    h.coordinator.inspect({ ...h.input, url: external.url }, h.paseo);
+    const choice = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "selection-required", "external reuse choice");
+    assert.equal(choice.development.ownership, "none");
+    assert.equal(choice.choices[0]?.kind, "reuse");
+    assert.equal(choice.choices[0]?.associated, true);
+    assert.equal(choice.choices[0]?.recommended, true);
+    assert.equal(choice.choices.at(-1)?.kind, "launch");
+    assert.equal(choice.choices.at(-1)?.recommended, false);
+    assert.equal(choice.choices[0]?.label, `Reuse ${external.url}`);
+    await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
+
+    h.coordinator.select({ ...h.binding, attempt: choice.attempt, selectionId: choice.choices[0]!.id });
+    const ready = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready", "external connection");
+    assert.equal(ready.development.ownership, "external");
+    assert.equal(ready.development.url, external.url);
+    assert.equal(ready.session.active, true);
+  } finally {
+    await h.close();
+    await new Promise<void>(resolve => external.server.close(() => resolve()));
+  }
+});
+
+test("terminal output associates a responder while a framework default alone stays unassociated", async () => {
+  const port = await freePort();
+  const external = await externalHtmlServer(port);
+  const h = await harness(["default", "0", "0"]);
+  const discoveredInput = { ...h.input, command: undefined, args: undefined };
+  try {
+    await writeFile(path.join(h.root, "package.json"), JSON.stringify({ scripts: { dev: `vite --port ${port}` } }));
+    h.coordinator.inspect(discoveredInput, h.paseo);
+    const frameworkDefault = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "selection-required", "framework-default responder");
+    assert.equal(frameworkDefault.choices.find(choice => choice.kind === "reuse")?.associated, false);
+    assert.equal(frameworkDefault.choices.find(choice => choice.kind === "reuse")?.recommended, false);
+
+    h.coordinator.stopSession(h.binding);
+    await eventually(() => h.coordinator.status(h.binding), state => state.phase === "stopped", "inspection reset");
+    h.setTerminalEvidence([`Local: http://localhost:${port}/`]);
+    h.coordinator.inspect(discoveredInput, h.paseo);
+    const associated = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "selection-required", "terminal-associated responder");
+    assert.equal(associated.choices.find(choice => choice.kind === "reuse")?.associated, true);
+    assert.equal(associated.choices.find(choice => choice.kind === "reuse")?.recommended, true);
+  } finally {
+    await h.close();
+    await new Promise<void>(resolve => external.server.close(() => resolve()));
+  }
+});
+
+test("inspection reports helper readiness separately while still discovering an existing server", async () => {
+  const external = await externalHtmlServer();
+  const h = await harness(["default", "0", "0"]);
+  try {
+    await rm(path.join(h.root, "DESIGN.md"));
+    h.coordinator.inspect({ ...h.input, url: external.url, cliPath: path.join(h.root, "missing-impeccable") }, h.paseo);
+    const inspected = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "selection-required", "server discovery with missing setup");
+    assert.match(inspected.helperReadinessError ?? "", /setup is incomplete.*DESIGN\.md/i);
+    assert.match(inspected.helperReadinessError ?? "", /CLI is unavailable/i);
+    const reuse = inspected.choices.find(choice => choice.kind === "reuse");
+    assert(reuse);
+    await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
+
+    h.coordinator.select({ ...h.binding, attempt: inspected.attempt, selectionId: reuse.id });
+    const failed = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "error", "connection blocked by helper readiness");
+    assert.match(failed.helperReadinessError ?? "", /DESIGN\.md/);
+    assert.equal(failed.development.ownership, "none");
+    assert.equal((await fetch(external.url)).status, 200);
+    await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
+  } finally {
+    await h.close();
+    await new Promise<void>(resolve => external.server.close(() => resolve()));
+  }
+});
+
+test("inspection keeps server choices visible when another Impeccable helper already exists", async () => {
+  const external = await externalHtmlServer();
+  const h = await harness(["default", "0", "0"]);
+  try {
+    await writeFile(path.join(h.root, ".impeccable", "live", "server.json"), JSON.stringify({ pid: 4242, port: 8400, token: "existing-token" }));
+    h.coordinator.inspect({ ...h.input, url: external.url }, h.paseo);
+    const inspected = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "selection-required", "server choice despite existing helper");
+    assert.match(inspected.helperReadinessError ?? "", /helper already exists/i);
+    assert(inspected.choices.some(choice => choice.kind === "reuse"));
+    assert.equal(inspected.development.ownership, "none");
+    assert.equal((await fetch(external.url)).status, 200);
+  } finally {
+    await h.close();
+    await new Promise<void>(resolve => external.server.close(() => resolve()));
+  }
+});
+
+test("choosing a discovered target is the explicit connect action", async () => {
+  const h = await harness(["default", "0", "0"]);
+  const app = path.join(h.root, "app-one");
+  try {
+    await mkdir(app);
+    await writeFile(path.join(app, "package.json"), "{}\n");
+    h.coordinator.inspect({ ...h.input, appPath: undefined }, h.paseo);
+    const choices = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "selection-required", "target choices");
+    const target = choices.choices.find(choice => choice.kind === "target" && choice.label.startsWith("app-one"));
+    assert(target);
+    await assert.rejects(readFile(path.join(app, ".fixture-state.json")));
+
+    h.coordinator.select({ ...h.binding, attempt: choices.attempt, selectionId: target.id });
+    const ready = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready", "selected target connected");
+    assert.equal(ready.development.appRoot, app);
+    assert.equal(ready.session.active, true);
+  } finally { await h.close(); }
+});
+
 test("keeps a monorepo launch at the root while explicitly targeting its unique frontend helper", async () => {
   const h = await harness(["default", "0", "0"]);
   const frontend = path.join(h.root, "frontend");
   try {
+    await rm(path.join(h.root, ".impeccable"), { recursive: true, force: true });
     await mkdir(frontend);
     await writeFile(path.join(frontend, "package.json"), JSON.stringify({ scripts: { dev: "vite" } }));
+    await writeFile(path.join(frontend, "PRODUCT.md"), "# Frontend product\n");
+    await writeFile(path.join(frontend, "DESIGN.md"), "# Frontend design\n");
+    await mkdir(path.join(frontend, ".impeccable", "live"), { recursive: true });
+    await writeFile(path.join(frontend, ".impeccable", "live", "config.json"), "{}\n");
     await writeFile(path.join(frontend, ".fixture-control.json"), JSON.stringify({ requireTarget: true, events: [{ type: "wait" }] }));
     h.coordinator.start(h.input, h.paseo);
     const first = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready" || state.phase === "selection-required", "monorepo startup or existing-server choice");
@@ -105,6 +248,7 @@ test("keeps a monorepo launch at the root while explicitly targeting its unique 
     }
     const ready = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready", "monorepo frontend ready");
     assert.equal(ready.development.appRoot, h.root, "root command cwd must not be replaced by the frontend folder");
+    assert.equal(ready.development.previewRoot, frontend, "preview app identity must remain distinct from the launch directory");
     assert.equal(ready.session.appRoot, frontend);
     assert.equal(ready.session.url, ready.development.url, "the actual emitted fallback URL must survive the target handoff");
     assert.deepEqual(JSON.parse(await readFile(path.join(frontend, ".fixture-boot-args.json"), "utf8")), ["live", "--target", frontend]);
@@ -227,6 +371,47 @@ test("changing app folders never silently carries an external-server association
     await h.close();
     await new Promise<void>(resolve => external.server.close(() => resolve()));
   }
+});
+
+test("read-only target switching clears stale external metadata without stopping the external server", async () => {
+  const external = await externalHtmlServer();
+  const h = await harness(["default", "0", "0"]);
+  try {
+    h.coordinator.start({ ...h.input, url: external.url }, h.paseo);
+    await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready", "external connected");
+    h.coordinator.stopSession(h.binding);
+    await eventually(() => h.coordinator.status(h.binding), state => state.phase === "stopped", "external session stopped");
+
+    const second = path.join(h.root, "second-app");
+    await mkdir(second);
+    await writeFile(path.join(second, "package.json"), "{}\n");
+    h.coordinator.inspect({ ...h.input, appPath: "second-app", url: "" }, h.paseo);
+    const inspected = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "idle", "second target inspected");
+    assert.equal(inspected.development.ownership, "none");
+    assert.equal(inspected.development.appRoot, second);
+    assert.equal(inspected.development.previewRoot, second);
+    assert.equal(inspected.development.url, null);
+    assert.equal((await fetch(external.url)).status, 200);
+  } finally {
+    await h.close();
+    await new Promise<void>(resolve => external.server.close(() => resolve()));
+  }
+});
+
+test("explicit start rechecks edited target readiness before launching a development process", async () => {
+  const h = await harness(["default", "0", "0"]);
+  const app = path.join(h.root, "edited-app");
+  try {
+    await mkdir(app);
+    await writeFile(path.join(app, "package.json"), "{}\n");
+    await rm(path.join(h.root, "DESIGN.md"));
+    h.coordinator.start({ ...h.input, appPath: "edited-app" }, h.paseo);
+    const failed = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "error", "edited target readiness failure");
+    assert.match(failed.helperReadinessError ?? "", /DESIGN\.md/);
+    assert.equal(failed.development.ownership, "none");
+    assert.equal(failed.development.pid, null);
+    await assert.rejects(readFile(path.join(app, ".fixture-state.json")));
+  } finally { await h.close(); }
 });
 
 test("helper startup failure leaves the verified development server running for retry", async () => {

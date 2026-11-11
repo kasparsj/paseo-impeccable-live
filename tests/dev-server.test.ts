@@ -105,9 +105,12 @@ test("extracts ANSI-wrapped loopback, wildcard and IPv6 URLs only", () => {
 
 test("bounds log bytes and lines, tracks cursors, and strips controls and secrets", () => {
   const logs = new DevelopmentLog();
+  logs.beginAttempt(7);
   logs.append("stdout", "\u001b[31mhello\u001b[0m token=super-secret http://u:p@localhost:4000/?api_key=abc\n");
   const first = logs.read();
   assert.equal(first.lines.length, 1);
+  assert.equal(first.attempt, 7);
+  assert.equal(first.lines[0].attempt, 7);
   assert.doesNotMatch(first.lines[0].text, /super-secret|u:p|api_key=abc|\u001b/);
   assert.match(first.lines[0].text, /token=\[redacted\]/);
   assert.match(first.lines[0].text, /api_key=\[redacted\]/);
@@ -120,6 +123,17 @@ test("bounds log bytes and lines, tracks cursors, and strips controls and secret
   assert(Buffer.byteLength(bounded.lines.map((line) => line.text).join("")) <= 128 * 1024);
   assert.equal(logs.read(Number.MAX_SAFE_INTEGER).reset, true);
   assert.doesNotMatch(redactLog("secret: value\u0000\u001b[2J"), /value|\u0000|\u001b/);
+});
+
+test("labels retained development output with its originating attempt", () => {
+  const logs = new DevelopmentLog();
+  logs.beginAttempt(1);
+  logs.append("system", "first attempt");
+  logs.beginAttempt(2);
+  logs.append("system", "current attempt");
+  const result = logs.read();
+  assert.equal(result.attempt, 2);
+  assert.deepEqual(result.lines.map(line => [line.attempt, line.text]), [[1, "first attempt"], [2, "current attempt"]]);
 });
 
 test("starts a delayed real server from split ANSI output and stops its owned process", async () => {
