@@ -40,6 +40,14 @@ The reviewed video, interface images and [accepted source patch](media/library-s
 - `git diff --check`: pass. No lint script is defined; no dependencies were added.
 - The preserved primary action navigated to `#event-details`. Two real Tab presses reached the wordmark and then the primary action; the accepted action displayed a visible focus outline. The demo's owned development server was stopped after capture, and the workspace sidebar was restored.
 
+## PR #4 preparation and privacy follow-up — 2026-11-12
+
+Review of `e3327e0` found two blockers: fresh-checkout preparation required `.omx` to exist, and private evidence was excluded only through a workstation-global Git ignore. `prepare` now creates `.omx` using the existing containment-checked helper; other commands retain their non-creating validation. The repository now owns the `/.omx/` exclusion.
+
+Five disposable CLI/Git regression tests cover fresh preparation and repeat preparation, non-mutating status before preparation, existing session preservation, symlinked `.omx` rejection without target writes, and private-path exclusion without global Git settings while the public media/config stay visible. Before the fix, the two corresponding regressions failed; after the fix all five pass. The real demo, private captures and active sessions were not used as test fixtures.
+
+Fresh follow-up checks: typecheck, script syntax, diff whitespace, and the existing symlink safety probe pass. The full suite reports **107 passed, 1 failed, 2 skipped** (110 tests, including the five additions). The sole failure remains `tests/process-guardian.test.ts:302`, timing out on recorded process exit after raced shutdown. The preceding independent review reproduced that failure on the base revision; the guardian implementation and test remain unchanged here. This follow-up does not claim to repair that baseline failure, and does not describe the full suite as green.
+
 ## Recording and evidence limits
 
 The first long rehearsal recording was interrupted and did not save; its workflow evidence comes from native observations, source and the journal. Two desktop-capture attempts followed the foreground desktop rather than background Paseo and were rejected during review. Those files are excluded under a private local directory and are not edit inputs.

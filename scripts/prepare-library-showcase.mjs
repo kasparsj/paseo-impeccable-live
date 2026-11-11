@@ -38,7 +38,8 @@ if (command === "safety-probe") {
   process.exit(0);
 }
 
-await assertSafeDirectoryTree(repositoryRoot, omxRoot);
+if (command === "prepare") await createSafeDirectory(repositoryRoot, omxRoot);
+else await assertSafeDirectoryTree(repositoryRoot, omxRoot);
 await assertTemplateComplete();
 
 if (command === "prepare") await prepare();

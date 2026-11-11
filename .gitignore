@@ -1,4 +1,5 @@
 node_modules/
+/.omx/
 *.tgz
 .impeccable/
 !demo/library-showcase/.impeccable/
