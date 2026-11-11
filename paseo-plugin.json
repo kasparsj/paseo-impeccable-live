@@ -1,0 +1,8 @@
+{
+  "id": "impeccable-live",
+  "name": "Impeccable Live",
+  "description": "Start local visual editing and deliver browser requests to your agent.",
+  "requirements": {
+    "paseo": ">=0.15.4 <0.16.0"
+  }
+}

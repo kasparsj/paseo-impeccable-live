@@ -1,0 +1,50 @@
+{
+  "name": "paseo-impeccable-live",
+  "private": true,
+  "version": "0.1.0",
+  "files": [
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "OVERVIEW.*.md",
+    "index.client.ts",
+    "index.client.tsx",
+    "index.server.ts",
+    "index.server.tsx",
+    "client/",
+    "server/",
+    "shared/",
+    "README.md",
+    "docs/",
+    "scripts/",
+    "tests/",
+    "tsconfig.json",
+    "evidence/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
+    "test:live": "node --experimental-strip-types evidence/real-helper-lifecycle.ts"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.15.4",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  },
+  "description": "Community Paseo integration for Impeccable Live with visual preview and background agent dispatch",
+  "type": "module",
+  "engines": {
+    "node": ">=22.14"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kasparsj/paseo-impeccable-live.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kasparsj/paseo-impeccable-live/issues"
+  },
+  "homepage": "https://github.com/kasparsj/paseo-impeccable-live#readme"
+}
