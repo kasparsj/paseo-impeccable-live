@@ -4,11 +4,11 @@ Audience, message, scenario, storyboard, shot list and rehearsal checklist: [lib
 
 ## Finished local delivery
 
-- Reviewable repository copies: [showcase video](media/library-showcase/showcase.mp4), [plugin interface image](media/library-showcase/plugin-panel.png), [accepted-result image](media/library-showcase/result.png), and [edit decision list](media/library-showcase/edit.json). Private raw recordings and session evidence remain local under `.omx/` and are excluded from Git.
-- Video: `.omx/evidence/library-video/impeccable-live-showcase.mp4` — 62.5 seconds, 1920×1080, 30fps, H.264/yuv420p, no audio, burned-in captions, 1,265,467 bytes.
-- Actual-interface image: `.omx/evidence/library-video/production-edit/plugin-panel.png`; accepted-result poster: `production-edit/poster.png` in the same evidence directory.
-- Editable timeline: `.omx/evidence/library-video/production-edit/edl.json`; executable shot configurations: `production-edit/shots/*.json`; render order: `production-edit/render-command.txt`. Re-render to fresh output names because the editor refuses overwrites.
-- Continuous source: `.omx/evidence/library-video/raw-verified.mov`, 240.011667 seconds. The final edit uses only this recording and one completed run (`591d2aab`). The opening, connection, selection/request, running agent, review/Accept, helper stop and reload remain in causal order. Generation and acceptance-cleanup waits are explicitly labelled **Waiting shortened**.
+- Reviewable repository copies: [showcase video](media/library-showcase/showcase.mp4), [plugin interface image](media/library-showcase/plugin-panel.png), [accepted-result image](media/library-showcase/result.png), and [edit decision list](media/library-showcase/edit.json). Ignored local production artifacts are under `artifacts/library-video/`; rejected private captures remain only in the legacy `.omx/evidence/library-video/excluded-private/` directory.
+- Video: `artifacts/library-video/impeccable-live-showcase.mp4` — 62.5 seconds, 1920×1080, 30fps, H.264/yuv420p, no audio, burned-in captions, 1,265,467 bytes.
+- Actual-interface image: `artifacts/library-video/production-edit/plugin-panel.png`; accepted-result poster: `production-edit/poster.png` in the same artifact directory.
+- Editable timeline: `artifacts/library-video/production-edit/edl.json`; executable shot configurations: `production-edit/shots/*.json`; render order: `production-edit/render-command.txt`. Re-render to fresh output names because the editor refuses overwrites.
+- Continuous source: `artifacts/library-video/raw-verified.mov`, 240.011667 seconds. This is a copy of the recording made against the historical `.omx/library-showcase-app` workflow, not evidence that the workflow was run again after the storage change. The final edit uses only this recording and one completed run (`591d2aab`). The opening, connection, selection/request, running agent, review/Accept, helper stop and reload remain in causal order. Generation and acceptance-cleanup waits are explicitly labelled **Waiting shortened**.
 - Export SHA-256: `f46025c28717d929bd5313790319b54b373bd1a0d6b6be3d2e7d3dfbbcd07326`. Raw SHA-256: `acfabb4ad3f5101ec80bb44f000a3ab7ec90737568cee591872432176deb1e9b`.
 
 The revised export was completely decoded without errors. Caption/cut frames were reviewed muted, including matched baseline/result framing, the actual running timer/Stop control, acceptance, and the final filled action/bold date with no helper toolbar. An initial edit's premature persistence cut and exposed startup output were rejected and corrected. Raw captures contain local session details and are private production evidence; distribute the reviewed export and clean interface image only.
@@ -17,7 +17,7 @@ Independent final review passed for the frozen export hash above and the demo's 
 
 ## Reproduce the starting state
 
-The prepared app is `.omx/library-showcase-app`; it has its own Git baseline. The accepted result is deliberately left in place, and its helper and development server are stopped. The dedicated Paseo workspace is named **Field Notes · Impeccable Live demo**. Keep its demo agent; do not attach this workflow to an unrelated agent.
+The neutral prepared copy is `.demo/library-showcase-app`; it has its own Git baseline and retains the accepted source. Its helper and development server are stopped. The app used for the recorded run remains unchanged at `.omx/library-showcase-app`, and the existing **Field Notes · Impeccable Live demo** Paseo workspace remains the legacy recording workspace. Do not retarget that workspace. For any new work, create a new dedicated Paseo workspace rooted at `.demo/library-showcase-app` and attach a new demo agent there.
 
 From this repository:
 
@@ -27,9 +27,9 @@ node scripts/prepare-library-showcase.mjs status
 node scripts/prepare-library-showcase.mjs reset --agent-finished
 ```
 
-Reset archives current explicit fixture files and the diff before restoring baseline. It refuses active helper records or symlinked paths. To create the app on another checkout with existing prerequisites, run `node scripts/prepare-library-showcase.mjs prepare`. No package installation is needed.
+Reset archives current explicit fixture files and the diff under `artifacts/library-video/reset-archives/` before restoring baseline. It refuses active helper records or symlinked paths. To create the app on another checkout with existing prerequisites, run `node scripts/prepare-library-showcase.mjs prepare`; the command uses `.demo/` and `artifacts/` and does not depend on `.omx/` or OMX tooling. No package installation is needed.
 
-Open the dedicated agent, invoke Command Center → **Open Impeccable Live**, and click **Connect and open preview**. The local server prints an ephemeral URL; use the one opened by the plugin. The app's sole focused target is `article#event-card`.
+Open the new dedicated agent attached to `.demo/library-showcase-app`, invoke Command Center → **Open Impeccable Live**, and click **Connect and open preview**. The local server prints an ephemeral URL; use the one opened by the plugin. The app's sole focused target is `article#event-card`.
 
 Select **Pick**, then the card's empty upper-right area. Paste:
 

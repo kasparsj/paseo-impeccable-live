@@ -1,5 +1,5 @@
 {
-  "source": "../../../.omx/evidence/library-video/raw-verified.mov",
+  "source": "../../../artifacts/library-video/raw-verified.mov",
   "targetSeconds": 62.5,
   "shots": [
     {

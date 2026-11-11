@@ -8,10 +8,11 @@ import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const omxRoot = path.join(repositoryRoot, ".omx");
+const demoStorageRoot = path.join(repositoryRoot, ".demo");
+const artifactsRoot = path.join(repositoryRoot, "artifacts");
 const templateRoot = path.join(repositoryRoot, "demo", "library-showcase");
-const demoRoot = path.join(omxRoot, "library-showcase-app");
-const evidenceRoot = path.join(omxRoot, "evidence", "library-video");
+const demoRoot = path.join(demoStorageRoot, "library-showcase-app");
+const evidenceRoot = path.join(artifactsRoot, "library-video");
 const markerPath = path.join(demoRoot, ".library-showcase-demo.json");
 const helperRecordPath = path.join(demoRoot, ".impeccable", "live", "server.json");
 const command = process.argv[2] ?? "prepare";
@@ -38,8 +39,8 @@ if (command === "safety-probe") {
   process.exit(0);
 }
 
-if (command === "prepare") await createSafeDirectory(repositoryRoot, omxRoot);
-else await assertSafeDirectoryTree(repositoryRoot, omxRoot);
+if (command === "prepare") await createSafeDirectory(repositoryRoot, demoStorageRoot);
+else await assertSafeDirectoryTree(repositoryRoot, demoStorageRoot);
 await assertTemplateComplete();
 
 if (command === "prepare") await prepare();
@@ -59,7 +60,7 @@ async function prepare() {
     return;
   }
 
-  await createSafeDirectory(omxRoot, demoRoot);
+  await createSafeDirectory(demoStorageRoot, demoRoot);
   await copyFixtureFiles();
   await writeSafeFile(demoRoot, markerPath, `${JSON.stringify({ schema: 1, demoRoot, templateRoot }, null, 2)}\n`, true);
 
@@ -118,7 +119,7 @@ async function assertTemplateComplete() {
 }
 
 async function assertOwnedDemo() {
-  await assertSafeDirectoryTree(omxRoot, demoRoot);
+  await assertSafeDirectoryTree(demoStorageRoot, demoRoot);
   if (!(await pathEntryExists(markerPath))) fail(`Refusing to operate on an unmarked directory: ${demoRoot}`);
   await assertSafeRegularFile(demoRoot, markerPath);
   const marker = JSON.parse(await readFile(markerPath, "utf8"));
@@ -165,7 +166,8 @@ async function archiveCurrentState(changed) {
   const timestamp = new Date().toISOString().replaceAll(":", "-").replace(".", "-");
   const archiveRoot = path.join(evidenceRoot, "reset-archives", timestamp);
   const sourceRoot = path.join(archiveRoot, "source");
-  await createSafeDirectory(omxRoot, sourceRoot);
+  await createSafeDirectory(repositoryRoot, artifactsRoot);
+  await createSafeDirectory(artifactsRoot, sourceRoot);
   for (const relative of changed) {
     const current = path.join(demoRoot, relative);
     if (!(await pathEntryExists(current))) continue;
@@ -205,7 +207,8 @@ async function describeBaseline() {
 }
 
 async function storeBaseline(description) {
-  await createSafeDirectory(omxRoot, evidenceRoot);
+  await createSafeDirectory(repositoryRoot, artifactsRoot);
+  await createSafeDirectory(artifactsRoot, evidenceRoot);
   await writeSafeFile(evidenceRoot, path.join(evidenceRoot, "baseline.json"), `${JSON.stringify(description, null, 2)}\n`);
 }
 

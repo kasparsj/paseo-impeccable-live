@@ -14,7 +14,9 @@ From the plugin repository root:
 node scripts/prepare-library-showcase.mjs prepare
 ```
 
-The command creates `.omx/library-showcase-app` as a separate local Git repository, commits only the explicit fixture files, and prints the directory and baseline commit. It does not install packages, start a server, create a Paseo workspace, or start Impeccable.
+The command creates `.demo/library-showcase-app` as a separate local Git repository, commits only the explicit fixture files, records its baseline under `artifacts/library-video/`, and prints the directory and baseline commit. It does not install packages, start a server, create a Paseo workspace, or start Impeccable. Neither this command nor reset requires OMX runtime or tools; `.omx/` is reserved only for ignored legacy orchestration data.
+
+For Impeccable work, create a new dedicated Paseo workspace rooted at `.demo/library-showcase-app` and attach a new demo agent. Do not retarget the legacy recording workspace, which remains bound to the historical `.omx/library-showcase-app` copy.
 
 In the prepared app, run:
 
@@ -32,6 +34,6 @@ First finish the demo agent's turn and stop this demo's Impeccable session from 
 node scripts/prepare-library-showcase.mjs reset --agent-finished
 ```
 
-Reset refuses to run without the acknowledgement flag or while a helper record exists. Before restoring, it archives the current explicit fixture files, Git status, and binary diff under `.omx/evidence/library-video/reset-archives/`. It restores only the named fixture source files from `demo/library-showcase`; it does not reset the parent repository, delete live journals, or touch another workspace.
+Reset refuses to run without the acknowledgement flag or while a helper record exists. Before restoring, it archives the current explicit fixture files, Git status, and binary diff under `artifacts/library-video/reset-archives/`. It restores only the named fixture source files from `demo/library-showcase`; it does not reset the parent repository, delete live journals, or touch another workspace.
 
 Use `node scripts/prepare-library-showcase.mjs status` to inspect the disposable app without changing it.
