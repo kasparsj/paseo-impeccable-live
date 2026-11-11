@@ -17,8 +17,12 @@ const record = async (key) => {
 
 if (command === "live") {
   await record("live");
+  await writeFile(path.join(root, ".fixture-boot-args.json"), JSON.stringify(process.argv.slice(2)));
   const control = await readJson(controlPath, {});
-  if (control.bootError) {
+  if (Number(control.bootDelayMs) > 0) await new Promise((resolve) => setTimeout(resolve, Number(control.bootDelayMs)));
+  if (control.requireTarget && !process.argv.includes("--target")) {
+    process.stdout.write(JSON.stringify({ ok: false, error: "target_selection_required" }));
+  } else if (control.bootError) {
     process.stdout.write(JSON.stringify({ ok: false, error: control.bootError }));
   } else {
     await mkdir(liveDir, { recursive: true });

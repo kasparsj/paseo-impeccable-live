@@ -1,5 +1,7 @@
 # Verification checkpoint
 
+Development-server automation is now implemented locally. See [the current automation verification record](development-server-verification.md) for the current 77-test suite, actual installed-plugin checks, monorepo target regression, independent review, cleanup evidence and platform/UI limits. The historical evidence below describes the earlier helper-only release.
+
 2026-11-11: installed local Paseo plugin, prepared for authorized public GitHub publication.
 
 - Strict SDK TypeScript check passed against Paseo 0.15.4.

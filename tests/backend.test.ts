@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -64,6 +64,51 @@ test("starts one owned helper, dispatches an event, and stops after identity rev
   assert.equal(stopped.phase, "stopped");
   assert.equal((await fixtureState(h.app)).stop, 1);
   assert.doesNotMatch(await readFile(path.join(h.app, "index.html"), "utf8"), /impeccable-live/);
+});
+
+test("lifecycle cleanup owns a missing helper record and permits a clean restart", async () => {
+  const h = await harness();
+  let bootCount = 0;
+  let stopCount = 0;
+  const bridge = new LiveBridge({
+    async boot(binding) {
+      const helper = { pid: 999_991 + bootCount++, port: 8400 + bootCount, token: `token-${bootCount}` };
+      await mkdir(path.join(binding.appRoot, ".impeccable", "live"), { recursive: true });
+      await writeFile(path.join(binding.appRoot, ".impeccable", "live", "server.json"), JSON.stringify(helper));
+      return { ok: true, serverPort: helper.port, serverToken: helper.token };
+    },
+    async stop(binding) {
+      stopCount++;
+      await rm(path.join(binding.appRoot, ".impeccable", "live", "server.json"), { force: true });
+    },
+  });
+  await bridge.start(h.input, h.paseo);
+  await rm(path.join(h.app, ".impeccable", "live", "server.json"), { force: true });
+  assert.equal((await bridge.stop({ workspaceId: "workspace-1", agentId: "agent-1" })).phase, "stopped");
+  assert.equal(stopCount, 1);
+  assert.equal((await bridge.start(h.input, h.paseo)).phase, "running");
+  await bridge.stop({ workspaceId: "workspace-1", agentId: "agent-1" });
+  assert.equal(stopCount, 2);
+});
+
+test("lifecycle cleanup surfaces a missing live helper record and retains the active run", async () => {
+  const h = await harness();
+  let refuse = true;
+  const bridge = new LiveBridge({
+    async boot(binding) {
+      const helper = { pid: 999_990, port: 8490, token: "retained-token" };
+      await mkdir(path.join(binding.appRoot, ".impeccable", "live"), { recursive: true });
+      await writeFile(path.join(binding.appRoot, ".impeccable", "live", "server.json"), JSON.stringify(helper));
+      return { ok: true, serverPort: helper.port, serverToken: helper.token };
+    },
+    async stop() { if (refuse) throw new Error("record is missing while its process is still running"); },
+  });
+  await bridge.start(h.input, h.paseo);
+  await rm(path.join(h.app, ".impeccable", "live", "server.json"), { force: true });
+  await assert.rejects(bridge.stop({ workspaceId: "workspace-1", agentId: "agent-1" }), /process is still running/);
+  assert.equal(bridge.peek({ workspaceId: "workspace-1", agentId: "agent-1" }).active, true);
+  refuse = false;
+  await bridge.stop({ workspaceId: "workspace-1", agentId: "agent-1" });
 });
 
 test("retains an uncertain dispatch and retries only explicitly", async () => {
