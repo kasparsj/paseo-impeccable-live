@@ -1,0 +1,103 @@
+{
+  "source": "../../../artifacts/library-video/raw-verified.mov",
+  "targetSeconds": 62.5,
+  "shots": [
+    {
+      "id": "01-open",
+      "start": 5,
+      "end": 11.5,
+      "caption": "Open Impeccable Live from Paseo.",
+      "crop": {
+        "x": 880,
+        "y": 120,
+        "width": 1200,
+        "height": 650
+      }
+    },
+    {
+      "id": "02-connect",
+      "start": 17.5,
+      "end": 23,
+      "caption": "Connect the local app.",
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 3024,
+        "height": 1250
+      }
+    },
+    {
+      "id": "03-baseline",
+      "start": 35,
+      "end": 39,
+      "caption": "A modest event card, ready to improve."
+    },
+    {
+      "id": "04-select",
+      "start": 49,
+      "end": 51,
+      "caption": "Select one UI element."
+    },
+    {
+      "id": "05-prompt",
+      "start": 59,
+      "end": 65.5,
+      "caption": "Ask for clearer hierarchy, spacing, and action."
+    },
+    {
+      "id": "06-send",
+      "start": 66,
+      "end": 69,
+      "caption": "Send one focused request."
+    },
+    {
+      "id": "07-agent",
+      "start": 70,
+      "end": 102,
+      "duration": 7,
+      "caption": "The request reaches your Paseo agent · Waiting shortened",
+      "crop": {
+        "x": 600,
+        "y": 1250,
+        "width": 1800,
+        "height": 450
+      }
+    },
+    {
+      "id": "08-review",
+      "start": 109,
+      "end": 116,
+      "caption": "Review the generated result."
+    },
+    {
+      "id": "09-accept",
+      "start": 120,
+      "end": 126,
+      "caption": "Accept the version you want to keep."
+    },
+    {
+      "id": "10-stop",
+      "start": 176,
+      "end": 181,
+      "caption": "Cleanup complete · Waiting shortened\nStop the visual session.",
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 3024,
+        "height": 1250
+      }
+    },
+    {
+      "id": "11-reload",
+      "start": 196,
+      "end": 202,
+      "caption": "Reload after the helper is stopped."
+    },
+    {
+      "id": "12-persist",
+      "start": 205,
+      "end": 209,
+      "caption": "Changes stay in your app.\nImpeccable Live for Paseo · Community integration"
+    }
+  ]
+}
