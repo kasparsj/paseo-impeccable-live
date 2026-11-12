@@ -54,6 +54,7 @@ async function guardianMain(): Promise<void> {
   let dev: Running | null = null;
   let devPid: number | null = null;
   let devLaunch: Promise<void> | null = null;
+  let devExit: Promise<void> | null = null;
   let stoppingDev: Promise<void> | null = null;
   let helper: OwnedHelper | null = null;
   let helperBoot: Promise<{ stdout: string; stderr: string }> | null = null;
@@ -186,13 +187,28 @@ async function guardianMain(): Promise<void> {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) { if (!check()) return; await new Promise((resolve) => setTimeout(resolve, 25)); }
   };
+  const waitForExit = async (exit: Promise<void> | null, timeoutMs: number) => {
+    if (!exit) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        exit,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("The owned development process did not close.")), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
   const stopDevelopment = async () => {
     if (stoppingDev) return stoppingDev;
     stoppingDev = (async () => {
       const child = dev;
+      const exit = devExit;
       await devLaunch?.catch(() => undefined);
       const pid = devPid ?? child?.pid ?? null;
-      if (!pid) { dev = null; return; }
+      if (!pid) { dev = null; devLaunch = null; devExit = null; return; }
       if (process.platform === "win32") {
         await new Promise<void>((resolve, reject) => {
           const killer = childProcess.spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { shell: false, windowsHide: true, stdio: "ignore" });
@@ -226,10 +242,15 @@ async function guardianMain(): Promise<void> {
         await waitUntil(() => groupAlive(pid), 2_000);
         if (groupAlive(pid)) throw new Error("The owned development process group did not exit.");
       }
+      // Process-group disappearance does not prove that Node has received the
+      // owned child's close event and reaped its exact PID. Await that event so
+      // shutdown cannot report completion while the child is still observable.
+      await waitForExit(exit, 2_000);
       child?.removeAllListeners();
       dev = null;
       devPid = null;
       devLaunch = null;
+      devExit = null;
     })();
     try { await stoppingDev; } finally { stoppingDev = null; }
   };
@@ -266,6 +287,7 @@ async function guardianMain(): Promise<void> {
         dev = child;
         devPid = child.pid ?? null;
         devLaunch = new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+        devExit = new Promise<void>((resolve) => { child.once("close", () => resolve()); });
         child.stdout?.on("data", (chunk: Buffer) => send({ type: "output", source: "stdout", text: chunk.toString("utf8").slice(-65_536) }));
         child.stderr?.on("data", (chunk: Buffer) => send({ type: "output", source: "stderr", text: chunk.toString("utf8").slice(-65_536) }));
         child.once("close", (code, signal) => {
@@ -279,7 +301,7 @@ async function guardianMain(): Promise<void> {
         });
         try { await devLaunch; }
         catch (error) {
-          if (dev === child) { dev = null; devPid = null; devLaunch = null; }
+          if (dev === child) { dev = null; devPid = null; devLaunch = null; devExit = null; }
           throw error;
         }
         devPid = child.pid ?? devPid;
