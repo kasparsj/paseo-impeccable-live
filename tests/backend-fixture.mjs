@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const command = process.argv[2];
@@ -9,10 +9,15 @@ const serverPath = path.join(liveDir, "server.json");
 const controlPath = path.join(root, ".fixture-control.json");
 const statePath = path.join(root, ".fixture-state.json");
 const readJson = async (file, fallback) => { try { return JSON.parse(await readFile(file, "utf8")); } catch { return fallback; } };
+const writeJson = async (file, value) => {
+  const temporary = `${file}.${process.pid}.tmp`;
+  await writeFile(temporary, JSON.stringify(value));
+  await rename(temporary, file);
+};
 const record = async (key) => {
   const state = await readJson(statePath, {});
   state[key] = (state[key] ?? 0) + 1;
-  await writeFile(statePath, JSON.stringify(state));
+  await writeJson(statePath, state);
 };
 
 if (command === "live") {
@@ -35,7 +40,7 @@ if (command === "live") {
   await record("poll");
   const control = await readJson(controlPath, { events: [] });
   const event = control.events?.shift() ?? { type: "wait" };
-  await writeFile(controlPath, JSON.stringify(control));
+  await writeJson(controlPath, control);
   if (event.type === "wait") setInterval(() => {}, 60_000);
   else if (event.type === "delay") {
     await new Promise((resolve) => setTimeout(resolve, event.ms));

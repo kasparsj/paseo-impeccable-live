@@ -289,7 +289,8 @@ test("does not leak a development process when shutdown races its launch", async
       const root = await mkdtemp(path.join(tmpdir(), "guardian-start-race-"));
       roots.push(root);
       const pidFile = path.join(root, "development.pid");
-      const guardian = new ProcessGuardian();
+      let observedExit = false;
+      const guardian = new ProcessGuardian({ onExit: () => { observedExit = true; } });
       const start = guardian.startDevelopment({ command: process.execPath, args: [fixture, "dev-record", pidFile], cwd: root });
       const shutdown = guardian.shutdown();
       const [startResult, shutdownResult] = await Promise.allSettled([start, shutdown]);
@@ -300,6 +301,7 @@ test("does not leak a development process when shutdown races its launch", async
       if (await exists(pidFile)) {
         const pid = Number(await readFile(pidFile, "utf8"));
         await eventually(() => !alive(pid), "recorded process exit after raced shutdown");
+        assert.equal(observedExit, true, "shutdown resolved before the guardian observed the owned process exit");
       }
       assert.equal(guardian.hasDevelopment, false);
     }
