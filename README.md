@@ -31,6 +31,8 @@ Discovery prefers an explicit absolute executable override. Otherwise it searche
 
 The plugin does not automatically install, bootstrap, repair or update Impeccable. For updates, follow the installation method's [upstream update instructions](https://impeccable.style/tutorials/getting-started/), then recheck. Impeccable Doctor can change project records and is not used as a readiness probe.
 
+The panel checks for skill updates in the background using Impeccable's first-party version endpoint. A newer version appears as a non-blocking notice with installed/latest skill versions and update instructions; **Details** shows unavailable, unknown-version and disabled checks. **Check for updates** retries immediately. The selected installation's `SKILL.md` version is compared separately from its engine version. Checks share a 24-hour in-memory cache for the plugin's loaded lifetime; failed requests have a short retry backoff. They respect `IMPECCABLE_NO_UPDATE_CHECK` and the preview app's `.impeccable/config.json` / `config.local.json` `updateCheck: false` setting, with the local setting taking precedence. The request sends no project contents or installed version, never runs the upstream context/check/update commands, and cannot block connection readiness. Linked or deliberately pinned installations may intentionally remain on an older version.
+
 Build/check locally:
 
 ```sh

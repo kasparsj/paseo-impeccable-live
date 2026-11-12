@@ -66,3 +66,12 @@ Closed the UI gap above using the actual local plugin in Paseo Desktop 0.15.4 on
 - **Stop session** removed the helper record and injection while the app continued returning HTTP 200. **Stop development server** then stopped the HTTP service. The empty engine cache remained absent. The fixture, preview tab and panel were removed, automatic settings restored, and the original chat left with an empty draft.
 
 No product code fixes were needed. This closes the recorded macOS panel, narrow-layout, keyboard and clipboard recovery smoke-test gap. Physical mobile behavior and additional engine/host versions remain outside this check.
+
+### Skill update notice (2026-11-12)
+
+The update notice uses the selected launcher's sibling skill metadata and a separate `check-updates` RPC. Requests identify the originating attempt, launcher and preview root; stale identities return unknown before invoking the checker. Readiness and development/helper lifecycle do not wait for upstream. No dependencies were added.
+
+- `npm run typecheck` and `git diff --check` pass. Impeccable's mechanical detector reports no findings for `client/live-panel.tsx`.
+- The full Node suite passes: 140 tests, 138 passed, 2 existing platform skips. New checker tests cover metadata versus engine versions, legacy metadata, unknown/invalid versions, semantic version precedence, offline/malformed/oversized responses, full-request and stalled-body timeouts, cache/backoff/forced retry, concurrency and opt-outs. Coordinator coverage proves a pending check does not block connection, foreign bindings are refused and stale installation identities never reach the checker.
+- A direct execution of the new checker against the existing personal launcher and real upstream endpoint returned `available`, installed skill `4.8.0`, latest skill `4.8.2`. This performed a metadata GET without installing or updating anything.
+- The existing installed plugin was not reloaded, so this change has no new installed-panel, compact-layout, keyboard or screen-reader evidence. The UI uses the existing panel styles, link component and focusable controls, but rendered behavior remains a smoke-test gap. Earlier installed-panel verification above applies to its recorded revision only.
