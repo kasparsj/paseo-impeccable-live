@@ -105,7 +105,7 @@ export class UpdateChecker {
   }
 }
 
-async function readInstalledSkillVersion(cliPath: string | null): Promise<string | null> {
+export async function readInstalledSkillVersion(cliPath: string | null): Promise<string | null> {
   if (!cliPath) return null;
   try {
     const content = await readFile(path.resolve(path.dirname(cliPath), "..", "SKILL.md"), "utf8");

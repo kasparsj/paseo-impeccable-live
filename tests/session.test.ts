@@ -11,7 +11,8 @@ const cliFixture = path.resolve("tests/backend-fixture.mjs");
 const devFixture = path.resolve("tests/dev-server-fixture.mjs");
 type WaitResult = { status: "idle" | "error" | "permission" | "timeout"; final: null; error: string | null; lastMessage: string | null };
 
-async function harness(devArgs: string[], control: Record<string, unknown> = {}, updates?: NonNullable<ConstructorParameters<typeof SessionCoordinator>[0]>["updates"]) {
+async function harness(devArgs: string[], control: Record<string, unknown> = {}, updates?: NonNullable<ConstructorParameters<typeof SessionCoordinator>[0]>["updates"],
+  quickUpdater?: NonNullable<ConstructorParameters<typeof SessionCoordinator>[0]>["quickUpdater"]) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "impeccable-session-")));
   await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "session-fixture", private: true }));
   await writeFile(path.join(root, "PRODUCT.md"), "# Product\n");
@@ -24,9 +25,16 @@ async function harness(devArgs: string[], control: Record<string, unknown> = {},
   let wait: () => Promise<WaitResult> = async () => ({ status: "idle", final: null, error: null, lastMessage: null });
   let workspaceRefreshCount = 0;
   let workspaceRefresh = async (_count: number) => ({});
+  let agentRefresh: () => Promise<object> = async () => ({ agent: {} });
+  let agentStatus: "idle" | "running" | "initializing" | "error" | "closed" = "idle";
+  let activeTurn: object | null = null;
+  let pendingPermissions: unknown[] = [];
   const agent = {
     workspaceId: null as string | null,
-    async refresh() { this.workspaceId = "workspace-1"; return { agent: {} }; },
+    get status() { return agentStatus; },
+    get activeTurn() { return activeTurn; },
+    get pendingPermissions() { return pendingPermissions; },
+    async refresh() { this.workspaceId = "workspace-1"; return agentRefresh(); },
     async send(message: string) { return send(message); },
     async waitForFinish() { return wait(); },
   };
@@ -38,7 +46,7 @@ async function harness(devArgs: string[], control: Record<string, unknown> = {},
     agents: { ref: () => agent },
     terminals: { ref: () => ({ async capture() { return { lines: terminalLines, totalLines: terminalLines.length, terminalId: "test", requestId: "test" }; } }) },
   } as unknown as PaseoApi;
-  const coordinator = new SessionCoordinator({ startupMs: 5_000, updates });
+  const coordinator = new SessionCoordinator({ startupMs: 5_000, updates, quickUpdater });
   const binding = { workspaceId: "workspace-1", agentId: "agent-1" };
   const input = { ...binding, appPath: ".", command: process.execPath, args: [devFixture, ...devArgs], cliPath: cliFixture };
   return {
@@ -46,6 +54,12 @@ async function harness(devArgs: string[], control: Record<string, unknown> = {},
     setSend(next: (message: string) => Promise<void>) { send = next; },
     setWait(next: () => Promise<WaitResult>) { wait = next; },
     setWorkspaceRefresh(next: (count: number) => Promise<object>) { workspaceRefresh = next; },
+    setAgentRefresh(next: () => Promise<object>) { agentRefresh = next; },
+    setAgentState(next: { status?: typeof agentStatus; activeTurn?: object | null; pendingPermissions?: unknown[] }) {
+      if (next.status) agentStatus = next.status;
+      if ("activeTurn" in next) activeTurn = next.activeTurn ?? null;
+      if (next.pendingPermissions) pendingPermissions = next.pendingPermissions;
+    },
     get workspaceRefreshCount() { return workspaceRefreshCount; },
     setTerminalEvidence(lines: string[]) { terminalEntries = [{ id: "terminal-1", cwd: root }]; terminalLines = lines; },
     async close() { await coordinator.shutdown().catch(() => undefined); await rm(root, { recursive: true, force: true }); },
@@ -82,6 +96,102 @@ async function externalHtmlServer(port = 0): Promise<{ server: Server; url: stri
   assert(address && typeof address !== "string");
   return { server, url: `http://127.0.0.1:${address.port}/` };
 }
+
+test("reserves an update before agent refresh and blocks connect, reconfigure, and competing apply races", async () => {
+  let updateChecks = 0;
+  let executeCalls = 0;
+  const updates = { check: async () => (++updateChecks === 1
+    ? { status: "available" as const, installedVersion: "4.8.1", latestVersion: "4.8.2" }
+    : { status: "current" as const, installedVersion: "4.8.2", latestVersion: "4.8.2" }) };
+  const quickUpdater: NonNullable<ConstructorParameters<typeof SessionCoordinator>[0]>["quickUpdater"] = {
+    prepare: async () => ({ status: "guidance", selectedPath: cliFixture, reason: "unused" }),
+    execute: async input => {
+      executeCalls++;
+      await input.verifyTarget();
+      return { status: "succeeded", installedVersion: "4.8.2", engineVersion: "4.8.0", output: "updated", instruction: "Reload." };
+    },
+    shutdown: async () => {},
+  };
+  const h = await harness(["default", "0", "0"], {}, updates, quickUpdater);
+  try {
+    h.coordinator.inspect(h.input, h.paseo);
+    const idle = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "idle", "update inspection");
+    let release!: () => void;
+    const pending = new Promise<object>(resolve => { release = () => resolve({ agent: {} }); });
+    h.setAgentRefresh(() => pending);
+    const readiness = idle.dependencyReadiness!;
+    const request = { ...h.binding, attempt: idle.attempt, cliPath: readiness.cliPath!, selectedCliPath: readiness.selectedCliPath!, appRoot: readiness.appRoot,
+      planId: "plan-one", scope: "project" as const, targetSkillVersion: "4.8.2", updaterVersion: "4.8.2" };
+    const applying = h.coordinator.applyQuickUpdate(request, h.paseo);
+    assert.throws(() => h.coordinator.start(h.input, h.paseo), /update to finish/i);
+    assert.throws(() => h.coordinator.inspect(h.input, h.paseo), /update to finish/i);
+    await assert.rejects(h.coordinator.applyQuickUpdate({ ...request, planId: "plan-two" }, h.paseo), /another Impeccable update/i);
+    assert.equal(executeCalls, 0);
+    release();
+    const result = await applying;
+    assert.equal(result.status, "succeeded");
+    assert.equal(executeCalls, 1);
+    assert.equal(h.coordinator.status(h.binding).updateOperation?.phase, "succeeded");
+    assert.equal(h.coordinator.status(h.binding).dependencyReadiness?.engineVersion, "4.8.0");
+    assert.equal(h.coordinator.status(h.binding).dependencyReadiness?.selectedCliPath, cliFixture);
+  } finally { await h.close(); }
+});
+
+test("revalidates preparation after awaited agent state and reports busy or unknown agents", async () => {
+  let prepareCalls = 0;
+  const updates = { check: async () => ({ status: "available" as const, installedVersion: "4.8.1", latestVersion: "4.8.2" }) };
+  const quickUpdater: NonNullable<ConstructorParameters<typeof SessionCoordinator>[0]>["quickUpdater"] = {
+    prepare: async input => { prepareCalls++; return { status: "guidance", selectedPath: input.selectedCliPath, reason: "fixture" }; },
+    execute: async () => { throw new Error("unused"); },
+    shutdown: async () => {},
+  };
+  const h = await harness(["default", "0", "0"], {}, updates, quickUpdater);
+  try {
+    h.coordinator.inspect(h.input, h.paseo);
+    const idle = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "idle", "prepare inspection");
+    const readiness = idle.dependencyReadiness!;
+    const request = { ...h.binding, attempt: idle.attempt, cliPath: readiness.cliPath!, selectedCliPath: readiness.selectedCliPath!,
+      appRoot: readiness.appRoot, targetSkillVersion: "4.8.2" };
+    h.setAgentState({ activeTurn: {} });
+    await assert.rejects(h.coordinator.prepareQuickUpdate(request, h.paseo), /busy or.*unknown/i);
+    assert.equal(prepareCalls, 0);
+    h.setAgentState({ activeTurn: null });
+    let release!: () => void;
+    h.setAgentRefresh(() => new Promise(resolve => { release = () => resolve({ agent: {} }); }));
+    const preparing = h.coordinator.prepareQuickUpdate(request, h.paseo);
+    h.coordinator.start(h.input, h.paseo);
+    release();
+    await assert.rejects(preparing, /stale|finish/i);
+    assert.equal(prepareCalls, 0);
+  } finally { await h.close(); }
+});
+
+test("does not report update success unless forced post-update detection confirms current", async () => {
+  let updateChecks = 0;
+  const updates = { check: async () => (++updateChecks === 1
+    ? { status: "available" as const, installedVersion: "4.8.1", latestVersion: "4.8.2" }
+    : { status: "unavailable" as const, installedVersion: "4.8.2", latestVersion: null }) };
+  const quickUpdater: NonNullable<ConstructorParameters<typeof SessionCoordinator>[0]>["quickUpdater"] = {
+    prepare: async () => ({ status: "guidance", selectedPath: cliFixture, reason: "unused" }),
+    execute: async input => {
+      await input.verifyTarget();
+      return { status: "succeeded", installedVersion: "4.8.2", engineVersion: "4.8.0", output: "updated", instruction: "Reload." };
+    },
+    shutdown: async () => {},
+  };
+  const h = await harness(["default", "0", "0"], {}, updates, quickUpdater);
+  try {
+    h.coordinator.inspect(h.input, h.paseo);
+    const idle = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "idle", "post-update inspection");
+    const readiness = idle.dependencyReadiness!;
+    await assert.rejects(h.coordinator.applyQuickUpdate({ ...h.binding, attempt: idle.attempt, cliPath: readiness.cliPath!,
+      selectedCliPath: readiness.selectedCliPath!, appRoot: readiness.appRoot, planId: "postcheck-plan", scope: "project",
+      targetSkillVersion: "4.8.2", updaterVersion: "4.8.2" }, h.paseo), /did not confirm it as current/i);
+    assert.equal(h.coordinator.status(h.binding).updateOperation?.phase, "failed");
+    h.coordinator.inspect(h.input, h.paseo);
+    assert.equal(h.coordinator.status(h.binding).updateOperation?.phase, "idle");
+  } finally { await h.close(); }
+});
 
 test("starts asynchronously, stays responsive, deduplicates Start, and boots helper after HTTP readiness", async () => {
   const h = await harness(["default", "0", "250"]);

@@ -1,12 +1,13 @@
 import type { PaseoApi } from "@getpaseo/client";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
-import type { DependencyReadiness, DevelopmentOverrides, SessionStatus } from "../shared/live.ts";
+import type { DependencyReadiness, DevelopmentOverrides, QuickUpdatePlan, SessionStatus } from "../shared/live.ts";
 import { discoverDevelopment, preflightTarget, type DevelopmentTarget } from "./dev-discovery.ts";
 import { DevelopmentServer, extractLocalUrls, probeLocalUrl, redactLog } from "./dev-server.ts";
 import { LiveBridge, readHelperRecord, resolveRunBinding } from "./live.ts";
 
 import { inspectDependency } from "./dependency.ts";
+import { QuickUpdater } from "./quick-update.ts";
 import { UpdateChecker } from "./update.ts";
 
 type Binding = { workspaceId: string; agentId: string };
@@ -22,12 +23,17 @@ export class SessionCoordinator {
   private owner: Binding | null = null;
   private input: Start | null = null;
   private target: DevelopmentTarget | null = null;
+  private workspaceRoot: string | null = null;
   private attempt = 0;
   private phase = "stopped";
   private message = "Connect and open preview to run this app.";
   private helperReadinessError: string | null = null;
   private dependencyReadiness: DependencyReadiness | null = null;
   private readonly updates: Pick<UpdateChecker, "check">;
+  private readonly quickUpdater: Pick<QuickUpdater, "prepare" | "execute" | "shutdown">;
+  private updateTask: Promise<unknown> | null = null;
+  private activeUpdatePlanId: string | null = null;
+  private updateOperation: SessionStatus["updateOperation"] = { phase: "idle", message: "No update is running." };
   private choices: SessionStatus["choices"] = [];
   private selections = new Map<string, () => Promise<void>>();
   private controller: AbortController | null = null;
@@ -36,8 +42,9 @@ export class SessionCoordinator {
   private closing = false;
   private readonly startupMs: number | undefined;
 
-  constructor(options: { startupMs?: number; updates?: Pick<UpdateChecker, "check"> } = {}) {
+  constructor(options: { startupMs?: number; updates?: Pick<UpdateChecker, "check">; quickUpdater?: Pick<QuickUpdater, "prepare" | "execute" | "shutdown"> } = {}) {
     this.updates = options.updates ?? new UpdateChecker();
+    this.quickUpdater = options.quickUpdater ?? new QuickUpdater();
     this.startupMs = options.startupMs;
     this.development = new DevelopmentServer(() => {}, options.startupMs);
     this.bridge = new LiveBridge({
@@ -68,7 +75,7 @@ export class SessionCoordinator {
     const lostServer = this.phase === "ready" && !development.verified;
     return { attempt: this.attempt, phase: lostServer ? "error" : this.phase,
       message: lostServer ? development.message : this.message, helperReadinessError: this.helperReadinessError, dependencyReadiness: this.dependencyReadiness,
-      choices: [...this.choices], development, session };
+      choices: [...this.choices], development, session, updateOperation: this.updateOperation };
   }
 
   logs(binding: Binding, cursor?: number) {
@@ -86,15 +93,126 @@ export class SessionCoordinator {
     return this.updates.check({ cliPath: readiness.cliPath, appRoot: readiness.appRoot, force: input.force });
   }
 
+  async prepareQuickUpdate(input: Binding & { attempt: number; cliPath: string; selectedCliPath: string; appRoot: string; targetSkillVersion: string }, paseo: PaseoApi) {
+    this.assertCurrentUpdateBinding(input);
+    this.assertUpdateIdle();
+    await this.assertAgentIdle(input, paseo);
+    this.assertCurrentUpdateBinding(input);
+    this.assertUpdateIdle();
+    const update = await this.updates.check({ cliPath: input.cliPath, appRoot: input.appRoot, force: true });
+    this.assertCurrentUpdateBinding(input);
+    this.assertUpdateIdle();
+    if (update.status !== "available" || update.latestVersion !== input.targetSkillVersion) {
+      throw new Error("Update availability changed. Check for updates again before preparing an update.");
+    }
+    return this.quickUpdater.prepare({
+      selectedCliPath: input.selectedCliPath, resolvedCliPath: input.cliPath, appRoot: input.appRoot,
+      targetSkillVersion: input.targetSkillVersion,
+    });
+  }
+
+  async applyQuickUpdate(input: Binding & { attempt: number; cliPath: string; selectedCliPath: string; appRoot: string;
+    planId: string; scope: QuickUpdatePlan["scope"]; targetSkillVersion: string; updaterVersion: string }, paseo: PaseoApi) {
+    this.assertCurrentUpdateBinding(input);
+    if (this.updateTask) {
+      if (this.activeUpdatePlanId === input.planId) return this.updateTask as ReturnType<QuickUpdater["execute"]>;
+      throw new Error("Another Impeccable update is already being prepared or run. Wait for it to finish.");
+    }
+    this.assertUpdateIdle();
+    this.updateOperation = { phase: "running", message: `Updating ${input.scope} Impeccable installations…` };
+    this.activeUpdatePlanId = input.planId;
+    const operation = (async () => {
+      await this.assertAgentIdle(input, paseo);
+      this.assertCurrentUpdateBinding(input);
+      this.assertUpdateLifecycleIdle();
+      return this.quickUpdater.execute({
+        planId: input.planId, selectedCliPath: input.selectedCliPath, resolvedCliPath: input.cliPath, appRoot: input.appRoot,
+        scope: input.scope, targetSkillVersion: input.targetSkillVersion, updaterVersion: input.updaterVersion,
+        verifyTarget: async () => {
+          this.assertCurrentUpdateBinding(input);
+          this.assertUpdateLifecycleIdle();
+          await this.assertAgentIdle(input, paseo);
+          this.assertCurrentUpdateBinding(input);
+          this.assertUpdateLifecycleIdle();
+          const current = await this.updates.check({ cliPath: input.cliPath, appRoot: input.appRoot, force: true });
+          this.assertCurrentUpdateBinding(input);
+          this.assertUpdateLifecycleIdle();
+          if (current.status !== "available" || current.latestVersion !== input.targetSkillVersion) {
+            throw new Error("The available skill version changed before mutation. Refresh update details and prepare a new update plan.");
+          }
+        },
+      });
+    })().then(async result => {
+      const refreshedReadiness = await inspectHelperReadiness(input.appRoot, this.workspaceRoot ?? input.appRoot,
+        input.selectedCliPath, new AbortController().signal, false);
+      const readinessBlocked = refreshedReadiness.checks.find(check =>
+        (check.id === "engine" || check.id === "compatibility") && check.status === "blocked");
+      if (refreshedReadiness.cliPath !== input.cliPath || refreshedReadiness.selectedCliPath !== input.selectedCliPath ||
+          refreshedReadiness.engineVersion !== result.engineVersion || readinessBlocked) {
+        throw new Error(`The updater finished, but refreshed launcher and engine readiness did not match the verified result. ${readinessBlocked?.message ?? ""}`.trim());
+      }
+      this.dependencyReadiness = refreshedReadiness;
+      const refreshed = await this.updates.check({ cliPath: input.cliPath, appRoot: input.appRoot, force: true });
+      if (refreshed.installedVersion !== result.installedVersion || refreshed.status !== "current") {
+        throw new Error("The selected installation updated, but refreshed update detection did not confirm it as current.");
+      }
+      this.updateOperation = { phase: "succeeded", message: `Impeccable ${result.installedVersion} and engine ${result.engineVersion} verified.`,
+        output: result.output, instruction: result.instruction };
+      return result;
+    }).catch(error => {
+      const message = redactLog(error instanceof Error ? error.message : "The update failed.").slice(0, 2_000);
+      this.updateOperation = { phase: "failed", message };
+      throw new Error(message);
+    }).finally(() => {
+      if (this.updateTask === operation) { this.updateTask = null; this.activeUpdatePlanId = null; }
+    });
+    this.updateTask = operation;
+    return operation;
+  }
+
+  private assertCurrentUpdateBinding(input: Binding & { attempt: number; cliPath: string; selectedCliPath: string; appRoot: string }): void {
+    this.assertOwner(input);
+    const readiness = this.dependencyReadiness;
+    if (!readiness || input.attempt !== this.attempt || input.cliPath !== readiness.cliPath ||
+        input.selectedCliPath !== readiness.selectedCliPath || input.appRoot !== readiness.appRoot) {
+      throw new Error("This update request is stale. Refresh update details before trying again.");
+    }
+  }
+
+  private assertUpdateIdle(): void {
+    this.assertUpdateLifecycleIdle();
+    if (this.updateTask) throw new Error("Another Impeccable update is already running.");
+  }
+
+  private assertUpdateLifecycleIdle(): void {
+    const session = this.owner ? this.bridge.peek(this.owner) : null;
+    if (this.closing || this.task || this.cleanup || session?.active || session?.pendingEvent) {
+      throw new Error("Stop Impeccable Live and wait for startup, cleanup, and event work to finish before updating.");
+    }
+  }
+
+  private async assertAgentIdle(binding: Binding, paseo: PaseoApi): Promise<void> {
+    const agent = paseo.agents.ref(binding.agentId);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refreshed = await Promise.race([
+      agent.refresh(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("The attached agent did not respond in time.")), 10_000); }),
+    ]).finally(() => { if (timer) clearTimeout(timer); });
+    if (!refreshed || agent.workspaceId !== binding.workspaceId || agent.status !== "idle" || agent.activeTurn || (agent.pendingPermissions?.length ?? 0) > 0) {
+      throw new Error("The attached agent is busy or its state is unknown. Wait for it to become idle before updating.");
+    }
+  }
+
   start(input: Start, paseo: PaseoApi): SessionStatus {
     if (this.closing) throw new Error("This plugin is shutting down.");
+    if (this.updateTask) throw new Error("Wait for the Impeccable update to finish before connecting or changing settings.");
     if (this.owner && (this.owner.workspaceId !== input.workspaceId || this.owner.agentId !== input.agentId) &&
         !this.task && !this.cleanup && !this.bridge.peek(this.owner).active && this.development.snapshot().ownership !== "owned") {
       const previous = this.development;
       void previous.shutdown().catch(error => console.error("Previous development lifetime cleanup failed:", error instanceof Error ? error.message : "unknown"));
       this.development = new DevelopmentServer(() => {}, this.startupMs);
       this.bridge.clearStoppedStatus();
-      this.owner = null; this.input = null; this.target = null;
+      this.owner = null; this.input = null; this.target = null; this.workspaceRoot = null;
     }
     this.assertOwner(input);
     if (this.cleanup) throw new Error("Cleanup is still in progress. Wait for stopped status before connecting again.");
@@ -109,6 +227,7 @@ export class SessionCoordinator {
     this.controller?.abort();
     this.controller = new AbortController();
     this.attempt++;
+    this.updateOperation = { phase: "idle", message: "No update is running." };
     this.helperReadinessError = null;
     this.dependencyReadiness = null;
     this.development.logs.beginAttempt(this.attempt);
@@ -121,13 +240,14 @@ export class SessionCoordinator {
 
   inspect(input: Start, paseo: PaseoApi): SessionStatus {
     if (this.closing) throw new Error("This plugin is shutting down.");
+    if (this.updateTask) throw new Error("Wait for the Impeccable update to finish before connecting or changing settings.");
     if (this.owner && (this.owner.workspaceId !== input.workspaceId || this.owner.agentId !== input.agentId) &&
         !this.task && !this.cleanup && !this.bridge.peek(this.owner).active && this.development.snapshot().ownership !== "owned") {
       const previous = this.development;
       void previous.shutdown().catch(error => console.error("Previous development lifetime cleanup failed:", error instanceof Error ? error.message : "unknown"));
       this.development = new DevelopmentServer(() => {}, this.startupMs);
       this.bridge.clearStoppedStatus();
-      this.owner = null; this.input = null; this.target = null;
+      this.owner = null; this.input = null; this.target = null; this.workspaceRoot = null;
     }
     if (this.owner && (this.bridge.peek(this.owner).active || this.development.snapshot().ownership === "owned")) {
       this.assertOwner(input);
@@ -140,6 +260,7 @@ export class SessionCoordinator {
     this.controller?.abort();
     this.controller = new AbortController();
     this.attempt++;
+    this.updateOperation = { phase: "idle", message: "No update is running." };
     this.helperReadinessError = null;
     this.dependencyReadiness = null;
     this.development.logs.beginAttempt(this.attempt);
@@ -153,6 +274,7 @@ export class SessionCoordinator {
 
   select(input: Binding & { attempt: number; selectionId: string }): SessionStatus {
     this.assertOwner(input);
+    if (this.updateTask) throw new Error("Wait for the Impeccable update to finish before connecting.");
     if (input.attempt !== this.attempt || (this.phase !== "selection-required" && this.phase !== "idle")) throw new Error("This selection is stale. Run discovery again for current choices.");
     const action = this.selections.get(input.selectionId);
     if (!action || !this.controller) throw new Error("Choose one of the current development options.");
@@ -180,6 +302,7 @@ export class SessionCoordinator {
     abortCheck(signal);
     if (!refreshed || !workspace.directory) throw new Error("The selected workspace has no available directory.");
     const root = await realpath(workspace.directory);
+    this.workspaceRoot = root;
     const agent = paseo.agents.ref(input.agentId);
     const available = await bounded(() => agent.refresh(), signal);
     abortCheck(signal);
@@ -329,6 +452,7 @@ export class SessionCoordinator {
 
   private stop(input: Binding, development: boolean): SessionStatus {
     this.assertOwner(input);
+    if (this.updateTask) throw new Error("Wait for the Impeccable update to finish before stopping or reconfiguring the session.");
     if (!this.owner) return this.status(input);
     if (development && this.development.snapshot().ownership === "external") throw new Error("This development server was started outside the plugin and cannot be stopped here.");
     if (this.cleanup) return this.status(input);
@@ -357,6 +481,7 @@ export class SessionCoordinator {
 
   async retry(input: Binding): Promise<SessionStatus> {
     this.assertOwner(input);
+    if (this.updateTask) throw new Error("Wait for the Impeccable update to finish before retrying event delivery.");
     await this.bridge.retry(input);
     return this.status(input);
   }
@@ -367,7 +492,9 @@ export class SessionCoordinator {
     // Dispatch guardian cleanup immediately; never wait behind the SDK or long boot.
     const bridge = this.bridge.quiesce();
     const processes = this.development.shutdown();
-    const results = await Promise.allSettled([bridge, processes]);
+    const updater = this.quickUpdater.shutdown();
+    const update = this.updateTask ?? Promise.resolve();
+    const results = await Promise.allSettled([bridge, processes, updater, update]);
     const failed = results.find(result => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
   }

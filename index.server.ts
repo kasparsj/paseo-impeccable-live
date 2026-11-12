@@ -1,6 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { SessionCoordinator } from "./server/session";
-import { checkUpdatesRpc, devLogsRpc, inspectRpc, retryRpc, selectRpc, startRpc, statusRpc, stopDevServerRpc, stopRpc } from "./shared/live";
+import { applyQuickUpdateRpc, checkUpdatesRpc, devLogsRpc, inspectRpc, prepareQuickUpdateRpc, retryRpc, selectRpc, startRpc, statusRpc, stopDevServerRpc, stopRpc } from "./shared/live";
 
 export default function contribute(server: PluginServerContext) {
   const session = new SessionCoordinator();
@@ -8,6 +8,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(inspectRpc, (input, { paseo }) => session.inspect(input, paseo));
   server.handle(statusRpc, (input) => session.status(input));
   server.handle(checkUpdatesRpc, (input) => session.checkUpdates(input));
+  server.handle(prepareQuickUpdateRpc, (input, { paseo }) => session.prepareQuickUpdate(input, paseo));
+  server.handle(applyQuickUpdateRpc, (input, { paseo }) => session.applyQuickUpdate(input, paseo));
   server.handle(stopRpc, (input) => session.stopSession(input));
   server.handle(retryRpc, (input) => session.retry(input));
   server.handle(selectRpc, (input) => session.select(input));
