@@ -51,3 +51,18 @@ Validation on macOS, Node v22.19.0, against the installed Impeccable engine 0.1.
 - The local plugin reloaded and reported running in Paseo 0.15.4. Fresh visual/compact-layout/clipboard interaction validation was not completed: native UI inspection was interrupted by changes to the active workspace, so it is not claimed here.
 
 Engine identity and matching local VERSION metadata do not establish compatibility with every Live protocol version, nor do launcher checks establish that the attached agent can load the skill. These limits are shown in connection details and setup documentation. No automatic installation, publication or deployment occurred.
+
+
+### Installed-panel recovery smoke check (2026-11-12)
+
+Closed the UI gap above using the actual local plugin in Paseo Desktop 0.15.4 on macOS, on implementation commit `c434512`. A disposable app under the ignored `.demo/` directory supplied controlled missing-installation, cold-engine and missing-project-setup states. No agent request was sent and no installer was run.
+
+- An unavailable explicit launcher displayed installation instructions and **Locate existing installation**; Connect remained disabled. Locate opened Advanced settings and focused the executable field, both when already expanded and when collapsed.
+- A wrapper around a cold copy of the installed upstream launcher, using an empty engine cache, displayed the missing-engine guidance and **Copy engine setup command**. Rechecking did not create that cache.
+- Both Copy actions succeeded. Pasting into an unsent chat draft confirmed the exact quoted engine command and full app-specific project setup prompt, including the CSP and plugin-owned helper instructions. Each draft was cleared without sending.
+- Tab moved from the engine Copy button to the project Copy button and then **Check again**; Return activated project copying. Native screenshots showed wrapping and accessible controls in full-width and narrow desktop split panes, including the long executable path and multiline prompt. Temporary panes were closed afterward. This is narrow desktop evidence, not a physical-phone test.
+- Clipboard rejection was exercised for both controls by temporarily replacing only the awaited clipboard call with a rejecting promise in the local source and reloading. The actual panel displayed **Copy was unavailable. Select and copy the text below.** and retained the command/prompt text. The exact production file was restored, verified unchanged against Git, and reloaded before subsequent checks. This is controlled fault-injection evidence, not an observed OS clipboard denial.
+- Selecting the existing prepared launcher and adding factual context/configuration for the disposable app made **Check again** clear the blockers and enable Connect. Connection opened the real local preview with the Impeccable toolbar. The panel reported **Connected** and engine `0.1.18` in Details.
+- **Stop session** removed the helper record and injection while the app continued returning HTTP 200. **Stop development server** then stopped the HTTP service. The empty engine cache remained absent. The fixture, preview tab and panel were removed, automatic settings restored, and the original chat left with an empty draft.
+
+No product code fixes were needed. This closes the recorded macOS panel, narrow-layout, keyboard and clipboard recovery smoke-test gap. Physical mobile behavior and additional engine/host versions remain outside this check.
