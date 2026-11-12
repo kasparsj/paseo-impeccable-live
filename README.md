@@ -12,6 +12,14 @@ In a monorepo, the launch directory and preview app can differ. A root command c
 
 The plugin owns the long-running listener. Browser requests wake the attached agent; the agent performs the requested work and replies through the installed Impeccable CLI. Starting the plugin does not itself request a redesign. Delivery accepted by Paseo is distinct from work completed by the agent.
 
+### Starting from a new workspace
+
+Impeccable Live currently requires an existing agent session. In Paseo 0.15.4, the **New workspace** composer excludes plugin slash commands, and plugins have no handoff that creates the workspace and agent before opening an agent panel. Switching this plugin's command to workspace context would not resolve that limitation.
+
+Create the workspace and an agent first, then enter `/impeccable-live` in that agent's composer. The workspace can be newly created; the requirement is an available agent and project directory.
+
+Native launch from **New workspace** is blocked on a Paseo API change. See the [implementation plan and pinned upstream evidence](docs/plans/new-workspace-launch.md) for the proposed creation handoff, plugin follow-up and acceptance checks. This flow is not implemented.
+
 ## Setup
 
 Requires Paseo app and daemon 0.15.4, Impeccable installed as a local skill with its engine already available, and the application's package manager and dependencies already installed. The first release is pinned below 0.16 pending compatibility checks. The plugin discovers npm, pnpm, Yarn or Bun from project metadata and lockfiles. It blocks Corepack network access and does not run package installation, bootstrap, preparation, publication or deployment commands. Missing tools or dependencies are shown as startup errors rather than installed automatically.
