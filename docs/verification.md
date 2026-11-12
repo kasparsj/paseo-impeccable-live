@@ -74,4 +74,27 @@ The update notice uses the selected launcher's sibling skill metadata and a sepa
 - `npm run typecheck` and `git diff --check` pass. Impeccable's mechanical detector reports no findings for `client/live-panel.tsx`.
 - The full Node suite passes: 140 tests, 138 passed, 2 existing platform skips. New checker tests cover metadata versus engine versions, legacy metadata, unknown/invalid versions, semantic version precedence, offline/malformed/oversized responses, full-request and stalled-body timeouts, cache/backoff/forced retry, concurrency and opt-outs. Coordinator coverage proves a pending check does not block connection, foreign bindings are refused and stale installation identities never reach the checker.
 - A direct execution of the new checker against the existing personal launcher and real upstream endpoint returned `available`, installed skill `4.8.0`, latest skill `4.8.2`. This performed a metadata GET without installing or updating anything.
-- The existing installed plugin was not reloaded, so this change has no new installed-panel, compact-layout, keyboard or screen-reader evidence. The UI uses the existing panel styles, link component and focusable controls, but rendered behavior remains a smoke-test gap. Earlier installed-panel verification above applies to its recorded revision only.
+- At implementation closeout, the existing installed plugin had not been reloaded and the new panel states lacked rendered evidence. The isolated installed-panel check below closes the desktop rendering, compact-layout and keyboard gap; earlier installed-panel evidence above applies to its recorded revision only.
+
+
+### Installed update-notice panel smoke check (2026-11-12)
+
+Verified implementation commit `58922f7` in Paseo Desktop 0.15.4 on macOS. A temporary directory-backed plugin named `impeccable-update-smoke` copied the PR source under the ignored `.demo/update-smoke/` directory. Only the fixture contribution/RPC identities and default app/launcher settings changed. The fixture ran in the current workspace, bound to the existing agent, without sending agent messages. Its prepared disposable app supplied valid Product/Design/Live records; a disposable launcher returned engine identity `0.1.18`, and its sibling skill metadata supplied controlled installed skill versions. The app's development script was deliberately unusable to catch accidental launches; no development server or helper was started.
+
+For the state matrix, only the fixture server injected a fetch function reading a fixture-owned JSON response or throwing an offline error. The production update checker, coordinator, RPC validation and panel logic remained in use. Manual actions exercised metadata rereads and cache bypass without reloading the fixture between cases.
+
+| Case | Native panel observation |
+| --- | --- |
+| Available: installed 4.8.0, latest 4.8.2 | Notice showed both versions, Update instructions and Check again. Details independently showed the same versions. Connect and open preview stayed available. |
+| Current: installed changed to 4.8.2 | Check for updates removed the notice and displayed “Impeccable 4.8.2: no newer skill version found.” |
+| Unavailable: injected offline exception | Manual retry displayed “Couldn’t check for Impeccable updates.” Connect stayed available. |
+| Unknown: selected skill metadata temporarily absent | Retry displayed “Impeccable skill version is unknown.” It did not claim the installation was current. |
+| Disabled: app configuration updateCheck false | Retry displayed “Impeccable update checks are disabled.” The update-check action disappeared; connection remained available. |
+
+After the state matrix, the fixture server entry was restored from the PR's actual entry (retaining only its fixture RPC names). Reloading only the fixture exercised the real first-party version endpoint through the real RPC and panel and showed installed `4.8.0`, latest `4.8.2` again. This is live endpoint evidence with disposable installation metadata, separate from the implementation check against the personal launcher recorded above.
+
+Native screenshots were inspected at full width and in two- and three-column desktop splits. In the narrowest split, the update notice, actions, version text, long installation paths and expanded Details wrapped without horizontal clipping. The existing primary Connect action remained visually distinct from the secondary update controls in the current dark theme. Tab moved from Update instructions to Check again and then Connect; the recheck had a visible focus ring, and Return activated it without starting an app. Accessibility-tree inspection exposed the notice text, named link, buttons and result text.
+
+The two temporary blank split panes were closed. The fixture plugin was removed and its disposable source/app/skill files deleted; the main `impeccable-live` plugin remained running and was never reloaded, disabled or stopped. No updates, package installs, project changes outside the fixture, or deployments were performed. No product-code repair was needed.
+
+This closes the recorded desktop panel smoke-test gap. Physical iOS/Android, alternate-theme rendering and spoken VoiceOver/screen-reader announcements were not exercised; accessibility-tree and keyboard checks do not establish those results.
