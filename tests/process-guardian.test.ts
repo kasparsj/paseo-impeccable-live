@@ -3,6 +3,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DevelopmentLog } from "../server/dev-server.ts";
 import { ProcessGuardian } from "../server/process-guardian.ts";
 
 const fixture = path.resolve("tests/guardian-fixture.mjs");
@@ -322,4 +323,18 @@ test("bounds command output and reports command failures", async () => {
     await guardian.shutdown().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+test("failed helper commands retain bounded redacted startup diagnostics", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "guardian-diagnostics-"));
+  const logs = new DevelopmentLog();
+  const guardian = new ProcessGuardian({ onOutput: (source, text) => logs.append(source, text) });
+  try {
+    await assert.rejects(guardian.command({ command: process.execPath, args: [fixture, "command-failure"], cwd: root }), /code 127.*startup output/);
+    const text = logs.read().lines.map(line => line.text).join("\n");
+    assert.match(text, /Engine cache is unavailable/);
+    assert.match(text, /password=\[redacted\]/);
+    assert(!text.includes("fixture-secret"));
+  } finally { await guardian.shutdown(); await rm(root, { recursive: true, force: true }); }
 });

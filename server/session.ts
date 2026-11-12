@@ -1,10 +1,12 @@
 import type { PaseoApi } from "@getpaseo/client";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
-import type { DevelopmentOverrides, SessionStatus } from "../shared/live.ts";
+import type { DependencyReadiness, DevelopmentOverrides, SessionStatus } from "../shared/live.ts";
 import { discoverDevelopment, preflightTarget, type DevelopmentTarget } from "./dev-discovery.ts";
 import { DevelopmentServer, extractLocalUrls, probeLocalUrl, redactLog } from "./dev-server.ts";
-import { LiveBridge, readHelperRecord, resolveCliPath, resolveRunBinding } from "./live.ts";
+import { LiveBridge, readHelperRecord, resolveRunBinding } from "./live.ts";
+
+import { inspectDependency } from "./dependency.ts";
 
 type Binding = { workspaceId: string; agentId: string };
 type Start = Binding & DevelopmentOverrides;
@@ -23,6 +25,7 @@ export class SessionCoordinator {
   private phase = "stopped";
   private message = "Connect and open preview to run this app.";
   private helperReadinessError: string | null = null;
+  private dependencyReadiness: DependencyReadiness | null = null;
   private choices: SessionStatus["choices"] = [];
   private selections = new Map<string, () => Promise<void>>();
   private controller: AbortController | null = null;
@@ -61,7 +64,7 @@ export class SessionCoordinator {
     const session = this.owner ? this.bridge.peek(binding) : idleSession();
     const lostServer = this.phase === "ready" && !development.verified;
     return { attempt: this.attempt, phase: lostServer ? "error" : this.phase,
-      message: lostServer ? development.message : this.message, helperReadinessError: this.helperReadinessError,
+      message: lostServer ? development.message : this.message, helperReadinessError: this.helperReadinessError, dependencyReadiness: this.dependencyReadiness,
       choices: [...this.choices], development, session };
   }
 
@@ -94,11 +97,12 @@ export class SessionCoordinator {
     this.controller = new AbortController();
     this.attempt++;
     this.helperReadinessError = null;
+    this.dependencyReadiness = null;
     this.development.logs.beginAttempt(this.attempt);
     this.phase = "discovering"; this.message = "Discovering the application and development command…";
     if (this.development.snapshot().ownership === "none") this.development.mark("discovering", this.message);
     this.choices = []; this.selections.clear();
-    this.background(() => this.run(this.input!, paseo, this.controller!.signal, false, true), this.controller.signal);
+    this.background(() => this.run(this.input!, paseo, this.controller!.signal, false), this.controller.signal);
     return this.status(input);
   }
 
@@ -124,6 +128,7 @@ export class SessionCoordinator {
     this.controller = new AbortController();
     this.attempt++;
     this.helperReadinessError = null;
+    this.dependencyReadiness = null;
     this.development.logs.beginAttempt(this.attempt);
     this.phase = "discovering";
     this.message = "Checking the application, preview, and local development servers…";
@@ -156,7 +161,7 @@ export class SessionCoordinator {
     this.task = task;
   }
 
-  private async run(input: Start, paseo: PaseoApi, signal: AbortSignal, readOnly: boolean, requireReadiness = readOnly): Promise<void> {
+  private async run(input: Start, paseo: PaseoApi, signal: AbortSignal, readOnly: boolean): Promise<void> {
     const workspace = paseo.workspaces.ref(input.workspaceId);
     const refreshed = await bounded(() => workspace.refresh(), signal);
     abortCheck(signal);
@@ -172,7 +177,7 @@ export class SessionCoordinator {
     if (discovery.kind === "selection-required") {
       this.offer(discovery.message, discovery.choices.map(choice => ({ ...choice, kind: "target" as const, persistSelection: true, action: async () => {
         const next = { ...input, selectionId: choice.id }; this.input = next;
-        await this.run(next, paseo, signal, false, true);
+        await this.run(next, paseo, signal, false);
       } })));
       return;
     }
@@ -189,36 +194,21 @@ export class SessionCoordinator {
     const previewPath = target.previewPath ?? target.appPath;
     const previewRoot = target.previewRoot ?? target.appRoot;
     let binding: Awaited<ReturnType<typeof resolveRunBinding>> | null = null;
-    if (readOnly) {
-      this.helperReadinessError = await inspectHelperReadiness(previewRoot, root, input.cliPath);
-    } else {
-      binding = await resolveRunBinding({ ...input, appPath: previewPath, url: input.url?.trim() || "http://127.0.0.1/",
-        exactAppRoot: true, signal }, paseo);
+    const checkReadiness = async () => {
+      this.dependencyReadiness = await inspectHelperReadiness(previewRoot, root, input.cliPath, signal, this.bridge.peek(input).active);
       abortCheck(signal);
-      if (!this.bridge.peek(input).active && (await readHelperRecord(previewRoot)).kind !== "missing") {
-        throw new Error("An Impeccable helper already exists for this app. Stop it through its owning session before starting this integration.");
-      }
-      if (requireReadiness) {
-        this.helperReadinessError = await impeccableReadinessError(previewRoot, root);
-        if (this.helperReadinessError) throw new Error(this.helperReadinessError);
-      }
-    }
-    const requireHelperReady = async () => {
-      const issues: string[] = [];
-      const records = await impeccableReadinessError(previewRoot, root);
-      if (records) issues.push(records);
-      try {
-        binding = await resolveRunBinding({ ...input, appPath: previewPath, url: input.url?.trim() || "http://127.0.0.1/",
-          exactAppRoot: true, signal }, paseo);
-      } catch (error) {
-        issues.push(error instanceof Error ? error.message : "Impeccable CLI readiness could not be verified.");
-      }
-      if (!this.bridge.peek(input).active && (await readHelperRecord(previewRoot)).kind !== "missing") {
-        issues.push("An Impeccable helper already exists for this app. Stop it through its owning session before connecting.");
-      }
-      this.helperReadinessError = issues.length ? issues.join(" ") : null;
-      if (this.helperReadinessError) throw new Error(this.helperReadinessError);
+      this.helperReadinessError = this.dependencyReadiness.checks
+        .filter(check => check.status === "blocked").map(check => check.message).join(" ") || null;
     };
+    const requireHelperReady = async () => {
+      await checkReadiness();
+      if (this.helperReadinessError) throw new Error(this.helperReadinessError);
+      binding = await resolveRunBinding({ ...input, appPath: previewPath, url: input.url?.trim() || "http://127.0.0.1/",
+        cliPath: this.dependencyReadiness!.cliPath!, exactAppRoot: true, signal }, paseo);
+    };
+    // Inspect the engine before any app process starts; ordinary checks never bootstrap it.
+    if (readOnly) await checkReadiness();
+    else await requireHelperReady();
     const finish = async (url: string) => {
       abortCheck(signal);
       if (!binding) await requireHelperReady();
@@ -383,7 +373,10 @@ async function impeccableReadinessError(previewRoot: string, workspaceRoot: stri
         if (relation.startsWith(".." + path.sep) || path.isAbsolute(relation) || !(await lstat(resolved)).isFile()) throw new Error("not a workspace file");
         const contents = await readFile(resolved, "utf8");
         if (!contents.trim()) throw new Error("empty file");
-        if (relative.endsWith("config.json")) JSON.parse(contents);
+        if (relative.endsWith("config.json")) {
+          const config: unknown = JSON.parse(contents);
+          if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("invalid config object");
+        }
         found = true;
         break;
       } catch { /* Try the next app ancestor. */ }
@@ -400,16 +393,17 @@ async function impeccableReadinessError(previewRoot: string, workspaceRoot: stri
   return null;
 }
 
-async function inspectHelperReadiness(previewRoot: string, workspaceRoot: string, cliPath?: string): Promise<string | null> {
-  const issues: string[] = [];
+async function inspectHelperReadiness(previewRoot: string, workspaceRoot: string, cliPath: string | undefined,
+  signal: AbortSignal, active: boolean): Promise<DependencyReadiness> {
+  const dependency = await inspectDependency({ workspaceRoot, appRoot: previewRoot, override: cliPath, signal });
+  const checks: DependencyReadiness["checks"] = [...dependency.checks];
   const records = await impeccableReadinessError(previewRoot, workspaceRoot);
-  if (records) issues.push(records);
-  try { await resolveCliPath(cliPath); }
-  catch (error) { issues.push(error instanceof Error ? error.message : "Impeccable CLI readiness could not be verified."); }
-  if ((await readHelperRecord(previewRoot)).kind !== "missing") {
-    issues.push("An Impeccable helper already exists for this app. Stop it through its owning session before connecting.");
+  checks.push({ id: "project", status: records ? "blocked" : "ready",
+    message: records ?? "Project context and Live configuration found. Impeccable validates Live configuration when connecting." });
+  if (!active && (await readHelperRecord(previewRoot)).kind !== "missing") {
+    checks.push({ id: "helper", status: "blocked", message: "An Impeccable helper already exists for this app. Stop it through its owning session before connecting." });
   }
-  return issues.length ? issues.join(" ") : null;
+  return { ...dependency, appRoot: previewRoot, checks };
 }
 
 function sameLocalEndpoint(left: string, right: string): boolean { return left === right; }

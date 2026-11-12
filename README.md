@@ -16,7 +16,20 @@ The plugin owns the long-running listener. Browser requests wake the attached ag
 
 Requires Paseo app and daemon 0.15.4, Impeccable installed as a local skill with its engine already available, and the application's package manager and dependencies already installed. The first release is pinned below 0.16 pending compatibility checks. The plugin discovers npm, pnpm, Yarn or Bun from project metadata and lockfiles. It blocks Corepack network access and does not run package installation, bootstrap, preparation, publication or deployment commands. Missing tools or dependencies are shown as startup errors rather than installed automatically.
 
-The Impeccable CLI is discovered from the usual personal skill directories, or set as an absolute executable under Advanced settings. Product/Design records and `.impeccable/live/config.json` must already exist; missing setup is shown without inventing project context.
+The panel checks the launcher, engine and project setup separately before starting the app. It shows recovery actions for missing installation, engine preparation, project setup and existing helper conflicts. **Check again** reruns discovery after repairs. Connection details show the selected executable and detected engine version; a successful engine identity probe is not a guarantee of Live protocol compatibility or proof that the attached agent can load the skill. Discovery follows the documented directory order, not the attached agent provider; select an explicit launcher if another installation should be used.
+
+### First-time Impeccable setup
+
+Run setup on the **host running Paseo's daemon**, using the coding tool attached to the panel:
+
+1. Follow the [official installation guide](https://impeccable.style/tutorials/getting-started/): run `npx impeccable install`, choose your coding tool and project or global scope, then reload the agent. Installing this Paseo plugin does not install the skill.
+2. If the panel finds the launcher but its engine is unavailable, use **Copy engine setup command** and run that command in a terminal on the daemon host. It invokes the selected launcher with `engine-probe`; upstream may download and cache its engine. Panel checks and connection commands suppress that download path. Offline installations should prepare the engine beforehand using upstream's supported preinstalled binary/cache configuration.
+3. If project context or Live configuration is missing, use **Copy project setup prompt**, paste it into the attached agent, and let the installed skill guide setup for the selected app. The plugin currently requires nonempty `PRODUCT.md`, `DESIGN.md` and an object-valued `.impeccable/live/config.json`; Impeccable performs its full Live configuration validation at connection. Preserve existing context and follow upstream's CSP consent workflow rather than creating placeholder records.
+4. Return to the panel, select **Check again**, then **Connect and open preview**. Setup commands/prompts remain selectable if clipboard access is denied.
+
+Discovery prefers an explicit absolute executable override. Otherwise it searches the preview app and its ancestors through the workspace root for `.agents/skills/impeccable/scripts/impeccable` and `.claude/skills/impeccable/scripts/impeccable`, followed by the personal `.agents`, `.codex` and `.claude` skill directories. Project candidates must resolve within the workspace and are displayed without execution until you select **Use project installation**. This grants the selected launcher the daemon user's normal permissions, just like an explicit executable override; the no-download environment is not a sandbox for arbitrary launchers. Trusted personal installations are probed automatically. **Locate existing installation** opens the executable setting; it does not install anything. Details show which installation was selected.
+
+The plugin does not automatically install, bootstrap, repair or update Impeccable. For updates, follow the installation method's [upstream update instructions](https://impeccable.style/tutorials/getting-started/), then recheck. Impeccable Doctor can change project records and is not used as a readiness probe.
 
 Build/check locally:
 

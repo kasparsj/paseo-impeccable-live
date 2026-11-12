@@ -1,10 +1,9 @@
 import type { PaseoApi, PaseoAgentHandle } from "@getpaseo/client";
 import type { RpcInput } from "@getpaseo/plugin";
 import { spawn } from "node:child_process";
-import { constants as fsConstants } from "node:fs";
 import { access, readFile, realpath, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
+import { resolveDependencyCli } from "./dependency.ts";
 import { checkAbort } from "./abort.ts";
 import { isWithin, resolveContainedDirectory, validateLocalUrl } from "./local-project.ts";
 import type { retryRpc, startRpc, statusRpc, stopRpc } from "../shared/live";
@@ -379,7 +378,7 @@ export async function resolveRunBinding(input: StartInput, paseo: PaseoApi): Pro
   await boundedRefreshBoundAgent(agent, input.workspaceId, signal);
   const appRoot = input.exactAppRoot ? await resolveContainedDirectory(workspaceRoot, input.appPath) : await resolveAppRoot(workspaceRoot, input.appPath);
   const url = validateLocalUrl(input.url);
-  const cliPath = await resolveCliPath(input.cliPath);
+  const cliPath = await resolveCliPath(input.cliPath, workspaceRoot, appRoot);
   return { workspaceId: input.workspaceId, agentId: input.agentId, workspaceRoot, appRoot, url, cliPath };
 }
 
@@ -411,24 +410,12 @@ async function isFrontendDirectory(directory: string): Promise<boolean> {
   }
 }
 
-export async function resolveCliPath(override?: string): Promise<string> {
-  if (!["linux", "darwin", "freebsd"].includes(process.platform)) {
-    throw safeError("Impeccable helper automation requires a Linux, macOS or FreeBSD host so failed-startup process ownership can be verified. Use Paseo on a supported development host.");
+export async function resolveCliPath(override?: string, workspaceRoot?: string, appRoot?: string): Promise<string> {
+  const cliPath = await resolveDependencyCli({ override, workspaceRoot, appRoot });
+  if (!override?.trim() && workspaceRoot && isWithin(workspaceRoot, cliPath)) {
+    throw safeError("Select the detected project-local Impeccable installation explicitly before connecting.");
   }
-  const candidates = override
-    ? [override]
-    : [path.join(homedir(), ".agents/skills/impeccable/scripts/impeccable"), path.join(homedir(), ".codex/skills/impeccable/scripts/impeccable")];
-  for (const candidate of candidates) {
-    if (!path.isAbsolute(candidate)) continue;
-    try {
-      const resolved = await realpath(candidate);
-      await access(resolved, fsConstants.X_OK);
-      if ((await stat(resolved)).isFile()) return resolved;
-    } catch {
-      // Try the next trusted install location.
-    }
-  }
-  throw safeError(override ? "The selected Impeccable CLI is unavailable or not executable." : "No installed Impeccable CLI was found.");
+  return cliPath;
 }
 
 async function refreshBoundAgent(agent: PaseoAgentHandle, workspaceId: string): Promise<void> {

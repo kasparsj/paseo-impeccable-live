@@ -122,3 +122,21 @@ export function validatePanelFields(config: PanelConfig): Partial<Record<"appPat
   }
   return errors;
 }
+
+/** Commands are displayed/copied only. Installation and project edits stay explicit. */
+export function dependencyRecovery(readiness: NonNullable<SessionStatus["dependencyReadiness"]>) {
+  const blocked = new Set(readiness.checks.filter(check => check.status === "blocked").map(check => check.id));
+  const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+  return {
+    installation: blocked.has("installation") && !readiness.cliPath,
+    engineCommand: blocked.has("engine") && readiness.cliPath
+      ? `${quote(readiness.cliPath)} engine-probe` : null,
+    projectPrompt: blocked.has("project")
+      ? [
+        `Prepare Impeccable Live for the app at ${JSON.stringify(readiness.appRoot)}.`,
+        "Use the installed Impeccable skill and its init, document, and Live setup instructions as needed. Read existing project context first; preserve existing product and design decisions. Do not fabricate placeholder records.",
+        ...readiness.checks.filter(check => check.id === "project" && check.status === "blocked").map(check => check.message),
+        "Explain any CSP changes and follow the upstream consent workflow. Do not start a persistent helper or polling loop; the Paseo plugin owns those. Stop after preparing the project so I can run Check again in the panel.",
+      ].join("\n\n") : null,
+  };
+}

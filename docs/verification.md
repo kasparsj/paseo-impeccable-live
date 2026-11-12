@@ -35,3 +35,34 @@ The plugin was installed into Paseo 0.15.4 and reported running. Command Center 
 The first host load rejected camel-case RPC names; lowercase names corrected it. The panel inputs use local form state and save to tab state on blur/start. Configuration restoration across a newly restored app session, slash-command interaction, and a generated design variant accepted into source remain unverified. The Steer acknowledgement is not proof of accepted-source integration.
 
 Stop does not cancel agent work already accepted. Delivery and completion failures remain visible; explicit uncertain-delivery retry can duplicate a request and is labeled accordingly. Completion-gate rechecking does not resend an edit.
+
+
+## Guided dependency readiness (2026-11-12)
+
+The panel now reports launcher, engine, compatibility, project setup and helper ownership independently. It offers installation/update links, an explicit selection for a detected project-local executable, executable overrides, copyable engine/project setup instructions with selectable fallback, and rechecking. Checks do not install or update software. Automatically discovered project launchers are not executed until explicitly selected; existing trusted personal launchers are probed with downloads suppressed.
+
+Validation on macOS, Node v22.19.0, against the installed Impeccable engine 0.1.18:
+
+- `npm run typecheck` and `git diff --check`: passed. No lint script exists and no dependencies were added.
+- `npm test`: 127 passed, zero failed, two platform skips (129 tests). Coverage includes launcher discovery and explicit project selection, malformed/failed probes, version mismatch, output redaction, timeout/cancellation including child processes, recovery instructions, repair/recheck/connect, external-server preservation, and existing lifecycle behavior. The delayed-boot cleanup test now waits for the fixture to enter boot before requesting stop, rather than assuming the public starting phase proves the child has begun executing.
+- A cold copy of the actual installed launcher, with empty HOME/cache and probe mode enabled, exited 127 without creating a cache or home files. The populated installation reported `impeccable-engine 0.1.18`, matching its scripts/VERSION.
+- `npm run test:live`: passed with the real installed helper. Start, authenticated status, background polling, served injection, helper exit and byte-for-byte source restoration succeeded. Agent/workspace handles were facades; no agent request was sent.
+- `node --experimental-strip-types evidence/development-server-lifecycle.ts`: passed with a real owned HTTP child and installed helper. Stop-session retained the app, resume reused its process/URL, stop-development and coordinator shutdown cleaned owned resources and injection. Agent handles were facades; no agent request was sent.
+- The local plugin reloaded and reported running in Paseo 0.15.4. Fresh visual/compact-layout/clipboard interaction validation was not completed: native UI inspection was interrupted by changes to the active workspace, so it is not claimed here.
+
+Engine identity and matching local VERSION metadata do not establish compatibility with every Live protocol version, nor do launcher checks establish that the attached agent can load the skill. These limits are shown in connection details and setup documentation. No automatic installation, publication or deployment occurred.
+
+
+### Installed-panel recovery smoke check (2026-11-12)
+
+Closed the UI gap above using the actual local plugin in Paseo Desktop 0.15.4 on macOS, on implementation commit `c434512`. A disposable app under the ignored `.demo/` directory supplied controlled missing-installation, cold-engine and missing-project-setup states. No agent request was sent and no installer was run.
+
+- An unavailable explicit launcher displayed installation instructions and **Locate existing installation**; Connect remained disabled. Locate opened Advanced settings and focused the executable field, both when already expanded and when collapsed.
+- A wrapper around a cold copy of the installed upstream launcher, using an empty engine cache, displayed the missing-engine guidance and **Copy engine setup command**. Rechecking did not create that cache.
+- Both Copy actions succeeded. Pasting into an unsent chat draft confirmed the exact quoted engine command and full app-specific project setup prompt, including the CSP and plugin-owned helper instructions. Each draft was cleared without sending.
+- Tab moved from the engine Copy button to the project Copy button and then **Check again**; Return activated project copying. Native screenshots showed wrapping and accessible controls in full-width and narrow desktop split panes, including the long executable path and multiline prompt. Temporary panes were closed afterward. This is narrow desktop evidence, not a physical-phone test.
+- Clipboard rejection was exercised for both controls by temporarily replacing only the awaited clipboard call with a rejecting promise in the local source and reloading. The actual panel displayed **Copy was unavailable. Select and copy the text below.** and retained the command/prompt text. The exact production file was restored, verified unchanged against Git, and reloaded before subsequent checks. This is controlled fault-injection evidence, not an observed OS clipboard denial.
+- Selecting the existing prepared launcher and adding factual context/configuration for the disposable app made **Check again** clear the blockers and enable Connect. Connection opened the real local preview with the Impeccable toolbar. The panel reported **Connected** and engine `0.1.18` in Details.
+- **Stop session** removed the helper record and injection while the app continued returning HTTP 200. **Stop development server** then stopped the HTTP service. The empty engine cache remained absent. The fixture, preview tab and panel were removed, automatic settings restored, and the original chat left with an empty draft.
+
+No product code fixes were needed. This closes the recorded macOS panel, narrow-layout, keyboard and clipboard recovery smoke-test gap. Physical mobile behavior and additional engine/host versions remain outside this check.

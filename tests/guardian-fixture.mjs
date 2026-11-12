@@ -7,7 +7,10 @@ const [mode, ...args] = process.argv.slice(2);
 const cwd = process.cwd();
 const recordPath = path.join(cwd, ".impeccable/live/server.json");
 
-if (mode === "dev") {
+if (mode === "command-failure") {
+  process.stderr.write("Engine cache is unavailable; password=fixture-secret");
+  process.exitCode = 127;
+} else if (mode === "dev") {
   process.stdout.write("Local: http://127.0.0.1:4567/\n");
   process.on("SIGTERM", () => process.exit(0));
   setInterval(() => {}, 60_000);
