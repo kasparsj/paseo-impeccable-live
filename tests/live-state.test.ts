@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canCancelSessionStartup, configAfterChoice, defaultPanelConfig, needsPanelConfigMigration, panelConfigSchema, parseArgumentList, previewAttemptToOpen, startOverrides } from "../client/live-state.ts";
+import { canCancelSessionStartup, cleanQuickUpdateError, configAfterChoice, defaultPanelConfig, needsPanelConfigMigration, panelConfigSchema, parseArgumentList, previewAttemptToOpen, startOverrides } from "../client/live-state.ts";
 import type { SessionStatus } from "../shared/live.ts";
 
 test("new panels use automatic settings while legacy values remain explicit overrides", () => {
@@ -27,6 +27,12 @@ test("advanced arguments remain structured and invalid shell-like text is reject
     args: ["run", "dev"],
     selectionId: "candidate-1",
   }), { command: "pnpm", args: ["run", "dev"], selectionId: "candidate-1" });
+});
+
+test("quick-update errors remove only the known RPC transport wrapper", () => {
+  assert.equal(cleanQuickUpdateError("Request failed: Injected updater failure. requestType=plugin.rpc.invoke.request code=handler_error"), "Injected updater failure.");
+  assert.equal(cleanQuickUpdateError("Plain updater failure"), "Plain updater failure");
+  assert.equal(cleanQuickUpdateError(undefined), null);
 });
 
 test("only stable discovery choices replace the saved app selection", () => {

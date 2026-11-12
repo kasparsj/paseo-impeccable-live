@@ -84,6 +84,11 @@ export function canCancelSessionStartup(phase: string | undefined): boolean {
   return phase !== undefined && cancelableSessionPhases.has(phase);
 }
 
+export function cleanQuickUpdateError(message: string | undefined): string | null {
+  if (!message) return null;
+  return message.replace(/^Request failed:\s*/i, "").replace(/\s+requestType=plugin\.rpc\.invoke\.request\b.*$/i, "").trim() || null;
+}
+
 export function previewAttemptToOpen(
   status: SessionStatus | undefined,
   initiatedAttempt: number | null,

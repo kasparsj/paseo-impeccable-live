@@ -4,10 +4,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
-  checkUpdatesRpc, inspectRpc, devLogsRpc, retryRpc, selectRpc, startRpc, statusRpc, stopDevServerRpc, stopRpc,
+  applyQuickUpdateRpc, checkUpdatesRpc, inspectRpc, devLogsRpc, prepareQuickUpdateRpc, retryRpc, selectRpc, startRpc, statusRpc, stopDevServerRpc, stopRpc,
 } from "../shared/live";
 import {
-  configAfterChoice, dependencyRecovery, defaultPanelConfig, needsPanelConfigMigration, panelConfigSchema, parseArgumentList,
+  cleanQuickUpdateError, configAfterChoice, dependencyRecovery, defaultPanelConfig, needsPanelConfigMigration, panelConfigSchema, parseArgumentList,
   panelView, validatePanelFields, previewAttemptToOpen, startOverrides, type PanelConfig,
 } from "./live-state";
 
@@ -47,6 +47,8 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
   const stopDevelopment = useRpc(stopDevServerRpc);
   const developmentLogs = useRpc(devLogsRpc);
   const checkUpdates = useRpc(checkUpdatesRpc);
+  const prepareQuickUpdate = useRpc(prepareQuickUpdateRpc);
+  const applyQuickUpdate = useRpc(applyQuickUpdateRpc);
   const queryClient = useQueryClient();
   const ids = { workspaceId, agentId: params.agentId };
 
@@ -70,6 +72,33 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
   const refreshUpdates = useMutation({
     mutationFn: ({ input }: { input: typeof updateInput; queryKey: typeof updateKey }) => checkUpdates({ ...input, force: true }),
     onSuccess: (result, { queryKey }) => queryClient.setQueryData(queryKey, result),
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["impeccable-live-update-plan", workspaceId, params.agentId] }); },
+  });
+  const updatePlanKey = ["impeccable-live-update-plan", workspaceId, params.agentId, state.data?.attempt,
+    state.data?.dependencyReadiness?.cliPath, state.data?.dependencyReadiness?.selectedCliPath,
+    state.data?.dependencyReadiness?.appRoot, updates.data?.latestVersion];
+  const updatePlan = useQuery({
+    queryKey: updatePlanKey,
+    queryFn: () => prepareQuickUpdate({
+      ...ids, attempt: state.data!.attempt, cliPath: state.data!.dependencyReadiness!.cliPath!,
+      selectedCliPath: state.data!.dependencyReadiness!.selectedCliPath!, appRoot: state.data!.dependencyReadiness!.appRoot,
+      targetSkillVersion: updates.data!.latestVersion!,
+    }),
+    enabled: !edited && updates.data?.status === "available" && !!state.data?.dependencyReadiness?.cliPath &&
+      !!state.data?.dependencyReadiness?.selectedCliPath,
+    retry: false,
+  });
+  const runQuickUpdate = useMutation({
+    mutationFn: async (plan: Extract<NonNullable<typeof updatePlan.data>, { status: "eligible" }>) => applyQuickUpdate({
+      ...ids, attempt: state.data!.attempt, cliPath: state.data!.dependencyReadiness!.cliPath!,
+      selectedCliPath: state.data!.dependencyReadiness!.selectedCliPath!, appRoot: state.data!.dependencyReadiness!.appRoot,
+      planId: plan.planId, scope: plan.scope, targetSkillVersion: plan.targetSkillVersion, updaterVersion: plan.updaterVersion,
+    }),
+    onSettled: async () => {
+      await state.refetch();
+      await queryClient.invalidateQueries({ queryKey: ["impeccable-live-updates", workspaceId, params.agentId] });
+      await queryClient.invalidateQueries({ queryKey: ["impeccable-live-update-plan", workspaceId, params.agentId] });
+    },
   });
   useEffect(() => {
     let mounted = true;
@@ -196,7 +225,7 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
   const session = data?.session;
   const view = state.error || data?.helperReadinessError ? "error" : panelView(data, inspecting);
   const starting = view === "starting" || view === "discovering";
-  const busy = action.isPending || selection.isPending || stopDev.isPending;
+  const busy = action.isPending || selection.isPending || stopDev.isPending || runQuickUpdate.isPending || data?.updateOperation?.phase === "running";
   const configurationLocked = !!session?.active || starting || development?.ownership === "owned";
   const previewUrl = development?.url ?? (session?.active ? session.url : null) ?? config.url;
   const previewReady = !!development?.verified && !!session?.active && !!previewUrl;
@@ -224,6 +253,9 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
   const retryLabel = session?.phase === "dispatching" ? "Waiting for agent…" : completionChecking ? "Checking completion…"
     : completionPaused ? "Recheck completion" : "Retry event delivery";
   const canStopOwnedDevelopment = development?.ownership === "owned" && development.phase !== "stopped" && development.phase !== "stopping";
+  const quickUpdateActionError = data?.updateOperation?.phase === "failed" ? null : cleanQuickUpdateError(runQuickUpdate.error?.message);
+  const quickUpdatePlanError = data?.updateOperation?.phase === "failed" || updatePlan.data?.status === "eligible"
+    ? null : cleanQuickUpdateError(updatePlan.error?.message);
   const error = action.error?.message || selection.error?.message || stopDev.error?.message || state.error?.message || previewError;
 
   function control(label: string, onPress: () => void, primary = false, disabled = false) {
@@ -280,8 +312,47 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
       {!edited && updates.data?.status === "available" && <View style={section} accessibilityLiveRegion="polite">
         <Text style={{ ...text, fontWeight: "600" }}>Impeccable update available</Text>
         <Text style={muted}>Installed {updates.data.installedVersion} · Latest {updates.data.latestVersion}</Text>
+        {updatePlan.isFetching && <Text style={muted}>Checking whether this installation can be updated here…</Text>}
+        {quickUpdatePlanError && <View style={{ gap: 6 }}>
+          <Text accessibilityRole="alert" selectable style={muted}>{quickUpdatePlanError}</Text>
+          {control("Review update eligibility again", () => { void updatePlan.refetch(); }, false, updatePlan.isFetching || busy)}
+        </View>}
+        {updatePlan.data?.status === "guidance" && <View style={{ gap: 6 }}>
+          <Text selectable style={muted}>Selected installation: {updatePlan.data.selectedPath}</Text>
+          <Text selectable style={muted}>{updatePlan.data.reason}</Text>
+        </View>}
+        {updatePlan.data?.status === "eligible" && <View style={{ gap: 8 }}>
+          <Text selectable style={muted}>Selected installation: {updatePlan.data.selectedPath}</Text>
+          <Text style={muted}>Scope: {updatePlan.data.scopeLabel}</Text>
+          <Text selectable style={muted}>Working project: {updatePlan.data.workingDirectory}</Text>
+          <Text style={muted}>Official updater: impeccable@{updatePlan.data.updaterVersion} · Target skill: {updatePlan.data.targetSkillVersion}</Text>
+          <Text style={{ ...text, fontWeight: "500" }}>Affected installations</Text>
+          {updatePlan.data.affectedInstallations.map(installation =>
+            <Text key={installation.path} selectable style={muted}>{installation.provider}: {installation.path} ({installation.version})</Text>)}
+          <Text style={muted}>The official scoped updater may refresh every recognized copy listed above, provider agents and commands, engine files, and existing hook wiring. --no-hooks prevents new hook installation, but stale hook repair may still occur. This plugin serializes its own updates only; it cannot lock external installers.</Text>
+          {control(runQuickUpdate.isPending || data?.updateOperation?.phase === "running" ? "Updating Impeccable…"
+            : `Update ${updatePlan.data.scopeLabel}`, () => {
+              const plan = updatePlan.data;
+              if (plan?.status === "eligible") runQuickUpdate.mutate(plan);
+            }, true, busy)}
+        </View>}
+        {quickUpdateActionError && <Text accessibilityRole="alert" selectable style={text}>{quickUpdateActionError}</Text>}
         <ExternalLink href="https://impeccable.style/tutorials/getting-started/">Update instructions</ExternalLink>
         {control(refreshUpdates.isPending ? "Checking for updates…" : "Check again", () => refreshUpdates.mutate({ input: updateInput, queryKey: updateKey }), false, refreshUpdates.isPending || updates.isFetching)}
+      </View>}
+
+      {data?.updateOperation?.phase === "succeeded" && <View style={section} accessibilityLiveRegion="polite">
+        <Text style={{ ...text, fontWeight: "600" }}>Impeccable update verified</Text>
+        <Text selectable style={muted}>{data.updateOperation.message}</Text>
+        {data.updateOperation.instruction && <Text style={muted}>{data.updateOperation.instruction}</Text>}
+        {data.updateOperation.output && <Text selectable style={{ ...text, fontFamily: "monospace", fontSize: 12 }}>{data.updateOperation.output}</Text>}
+      </View>}
+
+      {data?.updateOperation?.phase === "failed" && <View style={section} accessibilityLiveRegion="polite">
+        <Text style={{ ...text, fontWeight: "600" }}>Impeccable update needs attention</Text>
+        <Text accessibilityRole="alert" selectable style={text}>{data.updateOperation.message}</Text>
+        <Text style={muted}>Changes already made by the official updater were not rolled back. Review the selected installation, then check update eligibility again.</Text>
+        {control("Review update eligibility again", () => { void updatePlan.refetch(); }, false, updatePlan.isFetching || busy)}
       </View>}
 
       {readiness && recovery && (readiness.checks.some(check => check.status === "blocked") || recoveryText) && <View style={{ gap: 12 }} accessibilityLabel="Impeccable setup">

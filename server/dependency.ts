@@ -14,6 +14,7 @@ export type DependencyCheck = {
 
 export type DependencyInspection = {
   cliPath: string | null;
+  selectedCliPath: string | null;
   engineVersion: string | null;
   checks: DependencyCheck[];
 };
@@ -41,6 +42,10 @@ const PROBE_TIMEOUT_MS = 5_000;
 const ENGINE_RESPONSE = /^impeccable-engine ([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/;
 
 export async function resolveDependencyCli(options: ResolveOptions = {}): Promise<string> {
+  return (await resolveDependencySelection(options)).resolved;
+}
+
+async function resolveDependencySelection(options: ResolveOptions = {}): Promise<{ selected: string; resolved: string }> {
   if (!["linux", "darwin", "freebsd"].includes(process.platform)) {
     throw new Error("Impeccable helper automation requires a Linux, macOS or FreeBSD development host.");
   }
@@ -48,7 +53,7 @@ export async function resolveDependencyCli(options: ResolveOptions = {}): Promis
     if (!path.isAbsolute(options.override)) throw new Error("The selected Impeccable executable path must be absolute.");
     const resolved = await executableFile(options.override).catch(() => null);
     if (!resolved) throw new Error("The selected Impeccable executable is unavailable or not executable.");
-    return resolved;
+    return { selected: path.resolve(options.override), resolved };
   }
 
   const candidates: Array<{ path: string; workspace: boolean }> = [];
@@ -75,19 +80,23 @@ export async function resolveDependencyCli(options: ResolveOptions = {}): Promis
       const workspaceRoot = await realpath(options.workspaceRoot);
       if (!isWithin(workspaceRoot, resolved)) continue;
     }
-    return resolved;
+    return { selected: candidate.path, resolved };
   }
   throw new Error("No installed Impeccable skill launcher was found.");
 }
 
 export async function inspectDependency(options: InspectOptions): Promise<DependencyInspection> {
   let cliPath: string;
+  let selectedCliPath: string;
   try {
-    cliPath = await resolveDependencyCli(options);
+    const selection = await resolveDependencySelection(options);
+    cliPath = selection.resolved;
+    selectedCliPath = selection.selected;
   } catch (error) {
     const detail = safeDetail(error);
     return {
       cliPath: null,
+      selectedCliPath: null,
       engineVersion: null,
       checks: [
         { id: "installation", status: "blocked", message: "Install Impeccable or locate an existing installation.", ...(detail ? { detail } : {}) },
@@ -99,7 +108,7 @@ export async function inspectDependency(options: InspectOptions): Promise<Depend
 
   if (!options.override?.trim() && options.workspaceRoot && isWithin(await realpath(options.workspaceRoot), cliPath)) {
     return {
-      cliPath, engineVersion: null,
+      cliPath, selectedCliPath, engineVersion: null,
       checks: [{ id: "installation", status: "blocked",
         message: "A project-local Impeccable launcher was detected. Select it explicitly before running it with the daemon's permissions.", detail: cliPath }],
     };
@@ -118,7 +127,7 @@ export async function inspectDependency(options: InspectOptions): Promise<Depend
     if (options.signal?.aborted) throw new Error("Dependency inspection was cancelled.");
     const detail = safeDetail(error);
     return {
-      cliPath,
+      cliPath, selectedCliPath,
       engineVersion: null,
       checks: [
         installation,
@@ -142,7 +151,7 @@ export async function inspectDependency(options: InspectOptions): Promise<Depend
     };
   }
   return {
-    cliPath,
+    cliPath, selectedCliPath,
     engineVersion,
     checks: [installation, { id: "engine", status: "ready", message: `Impeccable engine ${engineVersion} is available.` }, compatibility],
   };

@@ -49,6 +49,7 @@ export const dependencyCheckSchema = z.object({
 });
 export const dependencyReadinessSchema = z.object({
   cliPath: z.string().nullable(),
+  selectedCliPath: z.string().nullable().optional(),
   engineVersion: z.string().nullable(),
   appRoot: z.string(),
   checks: z.array(dependencyCheckSchema),
@@ -69,12 +70,48 @@ export const checkUpdatesRpc = defineRpc({
   output: updateStatusSchema,
 });
 
+export const quickUpdateGuidanceSchema = z.object({
+  status: z.literal("guidance"), selectedPath: z.string(), reason: z.string(),
+});
+export const quickUpdatePlanSchema = z.object({
+  status: z.literal("eligible"), planId: z.string(), scope: z.enum(["personal", "project"]), scopeLabel: z.string(),
+  selectedPath: z.string(), workingDirectory: z.string(),
+  affectedInstallations: z.array(z.object({ provider: z.string(), path: z.string(), version: z.string() })),
+  targetSkillVersion: z.string(), updaterVersion: z.string(),
+});
+export const quickUpdatePreparationSchema = z.discriminatedUnion("status", [quickUpdateGuidanceSchema, quickUpdatePlanSchema]);
+export type QuickUpdatePlan = z.infer<typeof quickUpdatePlanSchema>;
+export const prepareQuickUpdateRpc = defineRpc({
+  name: "impeccable-live.prepare-update",
+  input: liveBindingSchema.extend({
+    attempt: z.number().int(), cliPath: z.string(), selectedCliPath: z.string(), appRoot: z.string(), targetSkillVersion: z.string(),
+  }),
+  output: quickUpdatePreparationSchema,
+});
+export const quickUpdateResultSchema = z.object({
+  status: z.literal("succeeded"), installedVersion: z.string(), engineVersion: z.string(), output: z.string(), instruction: z.string(),
+});
+export const applyQuickUpdateRpc = defineRpc({
+  name: "impeccable-live.apply-update",
+  input: liveBindingSchema.extend({
+    attempt: z.number().int(), cliPath: z.string(), selectedCliPath: z.string(), appRoot: z.string(),
+    planId: z.string(), scope: z.enum(["personal", "project"]), targetSkillVersion: z.string(), updaterVersion: z.string(),
+  }),
+  output: quickUpdateResultSchema,
+});
+
+export const updateOperationSchema = z.object({
+  phase: z.enum(["idle", "running", "succeeded", "failed"]),
+  message: z.string(), output: z.string().optional(), instruction: z.string().optional(),
+});
+
 export const sessionStatusSchema = z.object({
   attempt: z.number().int(),
   phase: z.string(),
   message: z.string(),
   helperReadinessError: z.string().nullable().optional(),
   dependencyReadiness: dependencyReadinessSchema.nullable().optional(),
+  updateOperation: updateOperationSchema.optional(),
   choices: z.array(choiceSchema),
   development: developmentStatusSchema,
   session: liveStatusSchema,
