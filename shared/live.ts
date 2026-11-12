@@ -41,11 +41,26 @@ export const developmentStatusSchema = z.object({
   pid: z.number().nullable(),
   message: z.string(),
 });
+export const dependencyCheckSchema = z.object({
+  id: z.enum(["installation", "engine", "compatibility", "project", "helper"]),
+  status: z.enum(["ready", "blocked", "warning"]),
+  message: z.string(),
+  detail: z.string().optional(),
+});
+export const dependencyReadinessSchema = z.object({
+  cliPath: z.string().nullable(),
+  engineVersion: z.string().nullable(),
+  appRoot: z.string(),
+  checks: z.array(dependencyCheckSchema),
+});
+export type DependencyReadiness = z.infer<typeof dependencyReadinessSchema>;
+
 export const sessionStatusSchema = z.object({
   attempt: z.number().int(),
   phase: z.string(),
   message: z.string(),
   helperReadinessError: z.string().nullable().optional(),
+  dependencyReadiness: dependencyReadinessSchema.nullable().optional(),
   choices: z.array(choiceSchema),
   development: developmentStatusSchema,
   session: liveStatusSchema,

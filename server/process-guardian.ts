@@ -126,8 +126,12 @@ async function guardianMain(): Promise<void> {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if ((failed || code !== 0) && stderr) {
+        // Forward complete bounded diagnostics through the existing redacted log sink.
+        send({ type: "output", source: "stderr", text: stderr.slice(-8192) + "\n" });
+      }
       if (failed) reject(failed);
-      else if (code !== 0) reject(new Error(`Command exited with code ${code ?? "unknown"}${signal ? ` (${signal})` : ""}.`));
+      else if (code !== 0) reject(new Error(`Command exited with code ${code ?? "unknown"}${signal ? ` (${signal})` : ""}. See startup output for details.`));
       else resolve({ stdout, stderr });
     });
   });

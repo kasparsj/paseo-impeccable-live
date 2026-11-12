@@ -35,3 +35,19 @@ The plugin was installed into Paseo 0.15.4 and reported running. Command Center 
 The first host load rejected camel-case RPC names; lowercase names corrected it. The panel inputs use local form state and save to tab state on blur/start. Configuration restoration across a newly restored app session, slash-command interaction, and a generated design variant accepted into source remain unverified. The Steer acknowledgement is not proof of accepted-source integration.
 
 Stop does not cancel agent work already accepted. Delivery and completion failures remain visible; explicit uncertain-delivery retry can duplicate a request and is labeled accordingly. Completion-gate rechecking does not resend an edit.
+
+
+## Guided dependency readiness (2026-11-12)
+
+The panel now reports launcher, engine, compatibility, project setup and helper ownership independently. It offers installation/update links, an explicit selection for a detected project-local executable, executable overrides, copyable engine/project setup instructions with selectable fallback, and rechecking. Checks do not install or update software. Automatically discovered project launchers are not executed until explicitly selected; existing trusted personal launchers are probed with downloads suppressed.
+
+Validation on macOS, Node v22.19.0, against the installed Impeccable engine 0.1.18:
+
+- `npm run typecheck` and `git diff --check`: passed. No lint script exists and no dependencies were added.
+- `npm test`: 127 passed, zero failed, two platform skips (129 tests). Coverage includes launcher discovery and explicit project selection, malformed/failed probes, version mismatch, output redaction, timeout/cancellation including child processes, recovery instructions, repair/recheck/connect, external-server preservation, and existing lifecycle behavior. The delayed-boot cleanup test now waits for the fixture to enter boot before requesting stop, rather than assuming the public starting phase proves the child has begun executing.
+- A cold copy of the actual installed launcher, with empty HOME/cache and probe mode enabled, exited 127 without creating a cache or home files. The populated installation reported `impeccable-engine 0.1.18`, matching its scripts/VERSION.
+- `npm run test:live`: passed with the real installed helper. Start, authenticated status, background polling, served injection, helper exit and byte-for-byte source restoration succeeded. Agent/workspace handles were facades; no agent request was sent.
+- `node --experimental-strip-types evidence/development-server-lifecycle.ts`: passed with a real owned HTTP child and installed helper. Stop-session retained the app, resume reused its process/URL, stop-development and coordinator shutdown cleaned owned resources and injection. Agent handles were facades; no agent request was sent.
+- The local plugin reloaded and reported running in Paseo 0.15.4. Fresh visual/compact-layout/clipboard interaction validation was not completed: native UI inspection was interrupted by changes to the active workspace, so it is not claimed here.
+
+Engine identity and matching local VERSION metadata do not establish compatibility with every Live protocol version, nor do launcher checks establish that the attached agent can load the skill. These limits are shown in connection details and setup documentation. No automatic installation, publication or deployment occurred.

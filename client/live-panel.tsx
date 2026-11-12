@@ -1,5 +1,5 @@
 import { useRpc, useTabState, type PluginAgentPanelProps } from "@getpaseo/plugin/client";
-import { ExternalLink, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
+import { copyText, ExternalLink, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -7,7 +7,7 @@ import {
   inspectRpc, devLogsRpc, retryRpc, selectRpc, startRpc, statusRpc, stopDevServerRpc, stopRpc,
 } from "../shared/live";
 import {
-  configAfterChoice, defaultPanelConfig, needsPanelConfigMigration, panelConfigSchema, parseArgumentList,
+  configAfterChoice, dependencyRecovery, defaultPanelConfig, needsPanelConfigMigration, panelConfigSchema, parseArgumentList,
   panelView, validatePanelFields, previewAttemptToOpen, startOverrides, type PanelConfig,
 } from "./live-state";
 
@@ -28,6 +28,8 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
   const argsInput = useRef<import("react-native").TextInput>(null);
   const focusArgsError = useRef(false);
   const fieldInputs = useRef<Record<string, import("react-native").TextInput | null>>({});
+  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
+  const [recoveryText, setRecoveryText] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<LogLine[]>([]);
   const [logsTruncated, setLogsTruncated] = useState(false);
@@ -113,10 +115,12 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
   }, [navigation, state.data, workspaceId]);
 
   const action = useMutation({
-    mutationFn: async (kind: "start" | "stop" | "retry" | "inspect") => {
+    mutationFn: async (request: "start" | "stop" | "retry" | "inspect" | { kind: "inspect"; cliPath: string }) => {
+      const kind = typeof request === "string" ? request : request.kind;
+      const currentConfig = typeof request === "string" ? config : { ...config, cliPath: request.cliPath };
       if (kind === "stop") { initiatedAttempt.current = null; return stop(ids); }
       if (kind === "retry") return retry(ids);
-      const validation = validatePanelFields(config);
+      const validation = validatePanelFields(currentConfig);
       setFields(validation);
       if (Object.keys(validation).length) { setAdvanced(true); throw new Error("Check the highlighted settings, then connect again."); }
       const parsed = parseArgumentList(argsText);
@@ -127,14 +131,17 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
         argsInput.current?.focus();
         throw new Error(parsed.error);
       }
-      const argumentsChanged = JSON.stringify(parsed.args) !== JSON.stringify(config.args);
-      const next = argumentsChanged ? withoutSelection({ ...config, args: parsed.args }) : { ...config, args: parsed.args };
+      const argumentsChanged = JSON.stringify(parsed.args) !== JSON.stringify(currentConfig.args);
+      const next = argumentsChanged ? withoutSelection({ ...currentConfig, args: parsed.args }) : { ...currentConfig, args: parsed.args };
       setArgsError(null);
       setConfig(next);
       saveConfig(next);
       setEdited(false);
       setChosenId(null);
-      if (kind === "inspect") return inspect({ ...ids, ...startOverrides(next) });
+      if (kind === "inspect") {
+        setRecoveryText(null); setRecoveryMessage(null);
+        return inspect({ ...ids, ...startOverrides(next) });
+      }
       const result = await start({ ...ids, ...startOverrides(next) });
       initiatedAttempt.current = result.attempt;
       return result;
@@ -186,6 +193,8 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
     : view === "discovering" ? "Checking local servers and readiness."
     : view === "idle" ? "Connect visual editing and open the local preview."
     : view === "error" && development?.phase === "error" ? development.message : data?.message ?? "Connect to discover this app.");
+  const readiness = edited ? null : data?.dependencyReadiness;
+  const recovery = readiness ? dependencyRecovery(readiness) : null;
   const completionPaused = session?.phase === "completion-paused";
   const completionChecking = session?.phase === "completion-checking";
   const retryBusy = session?.phase === "dispatching" || completionChecking;
@@ -207,8 +216,15 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
       <Text style={{ color: primary ? colors.accentForeground : colors.foreground, fontWeight: primary ? "600" : "400" }}>{label}</Text>
     </Pressable>;
   }
+  async function copyRecovery(value: string) {
+    setRecoveryMessage(null);
+    setRecoveryText(value);
+    try { await copyText(value); setRecoveryMessage("Copied. Run setup on the host running Paseo's daemon, then check again."); }
+    catch { setRecoveryMessage("Copy was unavailable. Select and copy the text below."); }
+  }
   function updateConfig<K extends keyof PanelConfig>(key: K, value: PanelConfig[K]) {
     setEdited(true);
+    setRecoveryText(null); setRecoveryMessage(null);
     setFields({});
     setConfig((current) => key === "selectionId" ? { ...current, [key]: value } : withoutSelection({ ...current, [key]: value }));
   }
@@ -243,6 +259,38 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
         <Text selectable={view === "error"} accessibilityRole={view === "error" ? "alert" : undefined} style={muted}>{summary}</Text>
       </View>
 
+      {readiness && recovery && (readiness.checks.some(check => check.status === "blocked") || recoveryText) && <View style={{ gap: 12 }} accessibilityLabel="Impeccable setup">
+        {readiness.checks.filter(check => check.status === "blocked").map(check =>
+          <View key={check.id} style={{ gap: 4 }}>
+            <Text style={{ ...text, fontWeight: "600" }}>{({ installation: "Find Impeccable", engine: "Prepare the engine", project: "Prepare this app", helper: "Existing session", compatibility: "Align skill and engine versions" } as Record<string, string>)[check.id]}</Text>
+            <Text selectable style={muted}>{check.message}</Text>
+            {check.detail && <Text selectable style={muted}>{check.detail}</Text>}
+          </View>)}
+        {readiness.cliPath && readiness.checks.some(check => check.id === "installation" && check.status === "blocked") &&
+          control("Use project installation", () => {
+            setRecoveryText(null); setRecoveryMessage(null);
+            action.mutate({ kind: "inspect", cliPath: readiness.cliPath! });
+          }, false, busy || configurationLocked)}
+        {recovery.installation && <View style={{ gap: 8 }}>
+          <Text selectable style={muted}>On the host running Paseo's daemon, run npx impeccable install. Choose your agent and project or global scope, then reload the agent.</Text>
+          <ExternalLink href="https://impeccable.style/tutorials/getting-started/">Installation instructions</ExternalLink>
+        </View>}
+        {(recovery.installation || readiness.checks.some(check => check.id === "engine" && check.status === "blocked")) &&
+          control("Locate existing installation", () => { setAdvanced(true); setTimeout(() => fieldInputs.current.cliPath?.focus(), 0); }, false, configurationLocked)}
+        {readiness.checks.some(check => check.id === "compatibility" && check.status === "blocked") && <View style={{ gap: 8 }}>
+          <Text style={muted}>Update Impeccable using its original installation method, or locate an installation with a matching engine.</Text>
+          <ExternalLink href="https://impeccable.style/tutorials/getting-started/">Update instructions</ExternalLink>
+          {control("Locate matching installation", () => { setAdvanced(true); setTimeout(() => fieldInputs.current.cliPath?.focus(), 0); }, false, configurationLocked)}
+        </View>}
+        {recovery.engineCommand && <View style={{ gap: 6 }}>
+          <Text style={muted}>Run this command in a terminal on the daemon host. The upstream launcher may download and cache its engine. Checks in this panel do not download it.</Text>
+          {control("Copy engine setup command", () => { void copyRecovery(recovery.engineCommand!); }, false, busy)}
+        </View>}
+        {recovery.projectPrompt && control("Copy project setup prompt", () => { void copyRecovery(recovery.projectPrompt!); }, false, busy)}
+        {recoveryText && <Text selectable style={{ ...text, fontFamily: "monospace" }}>{recoveryText}</Text>}
+        {recoveryMessage && <Text accessibilityLiveRegion="polite" style={muted}>{recoveryMessage}</Text>}
+      </View>}
+
       {choices.length > 1 && <View style={{ gap: 8 }} accessibilityLabel="Preview choices">
         {primaryChoices.map(choice => <Pressable key={choice.id} accessibilityRole="button"
           accessibilityState={{ selected: chosen?.id === choice.id, disabled: busy }} disabled={busy}
@@ -270,7 +318,7 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
         {!starting && choices.length > 1 && choices.filter(choice => choice.kind === "launch").map(choice =>
           <View key={choice.id}>{control("Start another development server", () => selection.mutate(choice), false, busy || !!data?.helperReadinessError)}</View>)}
       </View>
-      {(view === "error" || edited) && !starting && control("Refresh checks", () => { action.reset(); selection.reset(); stopDev.reset(); setPreviewError(null); action.mutate("inspect"); }, false, busy)}
+      {(view === "error" || edited) && !starting && control("Check again", () => { action.reset(); selection.reset(); stopDev.reset(); setPreviewError(null); action.mutate("inspect"); }, false, busy)}
       {error && <Text accessibilityRole="alert" selectable style={text}>{error}</Text>}
 
       {(session?.active || canStopOwnedDevelopment) && !starting && <View style={{ gap: 8 }}>
@@ -299,7 +347,10 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
           {development?.appRoot && <Text selectable style={muted}>Launch folder: {development.appRoot}</Text>}
           {appRoot && <Text selectable style={muted}>Preview folder: {appRoot}</Text>}
           {development?.command && <Text selectable style={{ ...text, fontFamily: "monospace" }}>{development.command}</Text>}
-          {config.cliPath && <Text selectable style={muted}>Impeccable: {config.cliPath}</Text>}
+          {(readiness?.cliPath || config.cliPath) && <Text selectable style={muted}>Impeccable: {readiness?.cliPath || config.cliPath}</Text>}
+          {readiness?.engineVersion && <Text style={muted}>Engine: {readiness.engineVersion}</Text>}
+          {readiness?.cliPath && <Text style={muted}>Launcher and engine checks do not verify that the attached agent can load the skill. Install Impeccable for that coding tool and reload the agent after installation.</Text>}
+          {readiness?.checks.filter(check => check.id === "compatibility").map(check => <Text key={check.id} selectable style={muted}>{check.message}</Text>)}
         </View>}
       </View>
 

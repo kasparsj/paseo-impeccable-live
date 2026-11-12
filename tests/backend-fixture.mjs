@@ -20,7 +20,11 @@ const record = async (key) => {
   await writeJson(statePath, state);
 };
 
-if (command === "live") {
+if (command === "engine-probe") {
+  const control = await readJson(controlPath, {});
+  if (control.engineError) { process.stderr.write(control.engineError); process.exitCode = 127; }
+  else process.stdout.write(`impeccable-engine ${control.engineVersion ?? "4.8.0"}\n`);
+} else if (command === "live") {
   await record("live");
   await writeFile(path.join(root, ".fixture-boot-args.json"), JSON.stringify(process.argv.slice(2)));
   const control = await readJson(controlPath, {});

@@ -99,3 +99,26 @@ test("field errors keep invalid overrides local before a connection request", as
   assert(validatePanelFields({ ...defaultPanelConfig, url: "http://user:pass@localhost/" }).url);
   assert(validatePanelFields({ ...defaultPanelConfig, url: "https://localhost/" }).url);
 });
+
+test("dependency recovery offers only the actions needed and quotes launcher paths", async () => {
+  const { dependencyRecovery } = await import("../client/live-state.ts");
+  const readiness = {
+    cliPath: "/tmp/agent's tools/impeccable", engineVersion: null, appRoot: "/workspace/frontend",
+    checks: [
+      { id: "engine" as const, status: "blocked" as const, message: "Engine unavailable." },
+      { id: "project" as const, status: "blocked" as const, message: "Missing DESIGN.md." },
+    ],
+  };
+  const recovery = dependencyRecovery(readiness);
+  assert.equal(recovery.installation, false);
+  assert.equal(recovery.engineCommand, `'${"/tmp/agent"}'"'"'s tools/impeccable' engine-probe`);
+  assert.match(recovery.projectPrompt!, /\/workspace\/frontend/);
+  assert.match(recovery.projectPrompt!, /Missing DESIGN.md/);
+  assert.match(recovery.projectPrompt!, /Do not start a persistent helper/);
+  assert.deepEqual(dependencyRecovery({ ...readiness, cliPath: null, checks: [{ id: "installation", status: "blocked", message: "Missing launcher." }] }), {
+    installation: true, engineCommand: null, projectPrompt: null,
+  });
+  assert.deepEqual(dependencyRecovery({ ...readiness, checks: [{ id: "compatibility", status: "warning", message: "Version unverified." }] }), {
+    installation: false, engineCommand: null, projectPrompt: null,
+  });
+});

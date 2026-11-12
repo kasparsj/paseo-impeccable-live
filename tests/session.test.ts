@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -199,7 +199,7 @@ test("inspection reports helper readiness separately while still discovering an 
     h.coordinator.inspect({ ...h.input, url: external.url, cliPath: path.join(h.root, "missing-impeccable") }, h.paseo);
     const inspected = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "selection-required", "server discovery with missing setup");
     assert.match(inspected.helperReadinessError ?? "", /setup is incomplete.*DESIGN\.md/i);
-    assert.match(inspected.helperReadinessError ?? "", /CLI is unavailable/i);
+    assert.match(inspected.dependencyReadiness?.checks.find(check => check.id === "installation")?.detail ?? "", /unavailable/i);
     const reuse = inspected.choices.find(choice => choice.kind === "reuse");
     assert(reuse);
     await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
@@ -508,6 +508,7 @@ test("Stop during delayed helper boot cleans the late helper and owned developme
   try {
     h.coordinator.start(h.input, h.paseo);
     await eventually(() => h.coordinator.status(h.binding), state => state.phase === "starting-impeccable", "helper boot start");
+    await eventually(async () => readFile(path.join(h.root, ".fixture-state.json"), "utf8").then(value => JSON.parse(value).live === 1, () => false), value => value, "fixture boot entered");
     h.coordinator.stopDevelopment(h.binding);
     const stopped = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "stopped" && state.development.phase === "stopped", "late boot cleanup", 8_000);
     assert.equal(stopped.session.active, false);
@@ -543,4 +544,66 @@ test("resumes on a fallback port without losing the helper or retained event", a
     await h.close();
     if (blocker) await new Promise<void>((resolve, reject) => blocker!.close(error => error ? reject(error) : resolve()));
   }
+});
+
+test("missing engine blocks app startup and rechecking after repair enables connection", async () => {
+  const h = await harness(["default", "0", "0"], { engineError: "Engine not cached; token=private-value" });
+  try {
+    h.coordinator.start(h.input, h.paseo);
+    const blocked = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "error", "engine preflight rejection");
+    assert.equal(blocked.development.ownership, "none");
+    assert(blocked.dependencyReadiness?.checks.some(check => check.id === "engine" && check.status === "blocked"));
+    assert(!JSON.stringify(blocked).includes("private-value"));
+    await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
+    await writeFile(path.join(h.root, ".fixture-control.json"), JSON.stringify({ events: [{ type: "wait" }] }));
+    h.coordinator.inspect(h.input, h.paseo);
+    const repaired = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "idle", "repaired dependency inspection");
+    assert.equal(repaired.helperReadinessError, null);
+    assert.equal(repaired.dependencyReadiness?.engineVersion, "4.8.0");
+    assert(repaired.dependencyReadiness?.checks.some(check => check.id === "compatibility" && check.status === "warning"));
+    await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
+    h.coordinator.start(h.input, h.paseo);
+    const connected = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready", "connection after engine repair");
+    assert.equal(connected.session.active, true);
+    assert.equal(connected.development.ownership, "owned");
+  } finally { await h.close(); }
+});
+
+test("engine failure leaves an external preview running and prevents helper boot", async () => {
+  const external = await externalHtmlServer();
+  const h = await harness(["default", "0", "0"], { engineError: "Engine unavailable" });
+  try {
+    h.coordinator.inspect({ ...h.input, url: external.url }, h.paseo);
+    const inspected = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "selection-required", "external preview with unavailable engine");
+    assert(inspected.dependencyReadiness?.checks.some(check => check.id === "engine" && check.status === "blocked"));
+    const reuse = inspected.choices.find(choice => choice.kind === "reuse")!;
+    h.coordinator.select({ ...h.binding, attempt: inspected.attempt, selectionId: reuse.id });
+    await eventually(() => h.coordinator.status(h.binding), state => state.phase === "error", "external connection engine rejection");
+    assert.equal((await fetch(external.url)).status, 200);
+    await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
+    await h.coordinator.stopSession(h.binding);
+    assert.equal((await fetch(external.url)).status, 200);
+  } finally { await h.close(); await new Promise<void>(resolve => external.server.close(() => resolve())); }
+});
+
+
+test("project-local launcher requires explicit selection before probing or starting the app", async () => {
+  const h = await harness(["default", "0", "0"]);
+  try {
+    const launcher = path.join(h.root, ".agents/skills/impeccable/scripts/impeccable");
+    await mkdir(path.dirname(launcher), { recursive: true });
+    await writeFile(launcher, await readFile(cliFixture));
+    await chmod(launcher, 0o755);
+    const input = { ...h.input, cliPath: undefined };
+    h.coordinator.start(input, h.paseo);
+    const blocked = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "error", "unselected project launcher");
+    assert.equal(blocked.dependencyReadiness?.cliPath, launcher);
+    assert.equal(blocked.dependencyReadiness?.engineVersion, null);
+    assert.equal(blocked.development.ownership, "none");
+    await assert.rejects(readFile(path.join(h.root, ".fixture-state.json")));
+    h.coordinator.start({ ...input, cliPath: launcher }, h.paseo);
+    const ready = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready", "explicitly selected project launcher");
+    assert.equal(ready.dependencyReadiness?.engineVersion, "4.8.0");
+    assert.equal(ready.session.active, true);
+  } finally { await h.close(); }
 });
