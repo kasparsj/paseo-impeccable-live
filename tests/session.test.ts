@@ -11,7 +11,7 @@ const cliFixture = path.resolve("tests/backend-fixture.mjs");
 const devFixture = path.resolve("tests/dev-server-fixture.mjs");
 type WaitResult = { status: "idle" | "error" | "permission" | "timeout"; final: null; error: string | null; lastMessage: string | null };
 
-async function harness(devArgs: string[], control: Record<string, unknown> = {}) {
+async function harness(devArgs: string[], control: Record<string, unknown> = {}, updates?: NonNullable<ConstructorParameters<typeof SessionCoordinator>[0]>["updates"]) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "impeccable-session-")));
   await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "session-fixture", private: true }));
   await writeFile(path.join(root, "PRODUCT.md"), "# Product\n");
@@ -38,7 +38,7 @@ async function harness(devArgs: string[], control: Record<string, unknown> = {})
     agents: { ref: () => agent },
     terminals: { ref: () => ({ async capture() { return { lines: terminalLines, totalLines: terminalLines.length, terminalId: "test", requestId: "test" }; } }) },
   } as unknown as PaseoApi;
-  const coordinator = new SessionCoordinator({ startupMs: 5_000 });
+  const coordinator = new SessionCoordinator({ startupMs: 5_000, updates });
   const binding = { workspaceId: "workspace-1", agentId: "agent-1" };
   const input = { ...binding, appPath: ".", command: process.execPath, args: [devFixture, ...devArgs], cliPath: cliFixture };
   return {
@@ -96,9 +96,41 @@ test("starts asynchronously, stays responsive, deduplicates Start, and boots hel
     const ready = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready", "coordinator ready");
     assert.equal(ready.development.verified, true);
     assert.equal(ready.session.active, true);
+    const beforeUpdateCheck = h.coordinator.status(h.binding);
+    assert.equal((await h.coordinator.checkUpdates({ ...h.binding, attempt: h.coordinator.status(h.binding).attempt, cliPath: cliFixture, appRoot: h.root })).status, "unknown");
+    assert.deepEqual(h.coordinator.status(h.binding), beforeUpdateCheck);
+    await assert.rejects(h.coordinator.checkUpdates({ workspaceId: "foreign", agentId: "agent-1", attempt: 1, cliPath: cliFixture, appRoot: h.root }), /another workspace or agent/);
     assert.equal(JSON.parse(await readFile(path.join(h.root, ".fixture-state.json"), "utf8")).live, 1);
     assert.throws(() => h.coordinator.status({ workspaceId: "foreign", agentId: "agent-1" }), /another workspace or agent/);
   } finally { await h.close(); }
+});
+
+test("a pending update check does not block connection or change readiness", async () => {
+  let finish!: (value: { status: "unavailable"; installedVersion: null; latestVersion: null }) => void;
+  const pending = new Promise<{ status: "unavailable"; installedVersion: null; latestVersion: null }>(resolve => { finish = resolve; });
+  let checked: { cliPath: string | null; appRoot: string; force?: boolean } | undefined;
+  const h = await harness(["default", "0", "0"], {}, { check: async input => { checked = input; return pending; } });
+  try {
+    assert.equal((await h.coordinator.checkUpdates({ ...h.binding, attempt: h.coordinator.status(h.binding).attempt, cliPath: cliFixture, appRoot: h.root })).status, "unknown");
+    h.coordinator.inspect(h.input, h.paseo);
+    const idle = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "idle", "inspection before update check");
+    for (const wrong of [{ attempt: idle.attempt - 1 }, { cliPath: "/other/impeccable" }, { appRoot: "/other/app" }]) {
+      assert.equal((await h.coordinator.checkUpdates({ ...h.binding, attempt: idle.attempt, cliPath: cliFixture, appRoot: h.root, ...wrong })).status, "unknown");
+      assert.equal(checked, undefined);
+    }
+    const checking = h.coordinator.checkUpdates({ ...h.binding, force: true, attempt: idle.attempt, cliPath: cliFixture, appRoot: h.root });
+    assert.deepEqual(checked, { cliPath: cliFixture, appRoot: h.root, force: true });
+    h.coordinator.select({ ...h.binding, attempt: idle.attempt, selectionId: "launch" });
+    const ready = await eventually(() => h.coordinator.status(h.binding), state => state.phase === "ready", "connect while update check is pending");
+    assert.equal(ready.helperReadinessError, null);
+    assert.equal(ready.session.active, true);
+    finish({ status: "unavailable", installedVersion: null, latestVersion: null });
+    assert.equal((await checking).status, "unavailable");
+    assert.equal(h.coordinator.status(h.binding).phase, "ready");
+  } finally {
+    finish({ status: "unavailable", installedVersion: null, latestVersion: null });
+    await h.close();
+  }
 });
 
 test("read-only inspection discovers a launch without starting the development server or helper", async () => {

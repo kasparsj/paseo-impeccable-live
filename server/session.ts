@@ -7,6 +7,7 @@ import { DevelopmentServer, extractLocalUrls, probeLocalUrl, redactLog } from ".
 import { LiveBridge, readHelperRecord, resolveRunBinding } from "./live.ts";
 
 import { inspectDependency } from "./dependency.ts";
+import { UpdateChecker } from "./update.ts";
 
 type Binding = { workspaceId: string; agentId: string };
 type Start = Binding & DevelopmentOverrides;
@@ -26,6 +27,7 @@ export class SessionCoordinator {
   private message = "Connect and open preview to run this app.";
   private helperReadinessError: string | null = null;
   private dependencyReadiness: DependencyReadiness | null = null;
+  private readonly updates: Pick<UpdateChecker, "check">;
   private choices: SessionStatus["choices"] = [];
   private selections = new Map<string, () => Promise<void>>();
   private controller: AbortController | null = null;
@@ -34,7 +36,8 @@ export class SessionCoordinator {
   private closing = false;
   private readonly startupMs: number | undefined;
 
-  constructor(options: { startupMs?: number } = {}) {
+  constructor(options: { startupMs?: number; updates?: Pick<UpdateChecker, "check"> } = {}) {
+    this.updates = options.updates ?? new UpdateChecker();
     this.startupMs = options.startupMs;
     this.development = new DevelopmentServer(() => {}, options.startupMs);
     this.bridge = new LiveBridge({
@@ -71,6 +74,16 @@ export class SessionCoordinator {
   logs(binding: Binding, cursor?: number) {
     this.assertOwner(binding);
     return this.development.logs.read(cursor, this.development.snapshot().ownership !== "external");
+  }
+
+  async checkUpdates(input: Binding & { force?: boolean; attempt: number; cliPath: string | null; appRoot: string }) {
+    this.assertOwner(input);
+    const readiness = this.dependencyReadiness;
+    if (!readiness || this.closing || input.attempt !== this.attempt ||
+        input.cliPath !== readiness.cliPath || input.appRoot !== readiness.appRoot) {
+      return { status: "unknown" as const, installedVersion: null, latestVersion: null };
+    }
+    return this.updates.check({ cliPath: readiness.cliPath, appRoot: readiness.appRoot, force: input.force });
   }
 
   start(input: Start, paseo: PaseoApi): SessionStatus {

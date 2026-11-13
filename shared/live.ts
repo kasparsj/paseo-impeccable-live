@@ -55,6 +55,20 @@ export const dependencyReadinessSchema = z.object({
 });
 export type DependencyReadiness = z.infer<typeof dependencyReadinessSchema>;
 
+export const updateStatusSchema = z.object({
+  status: z.enum(["available", "current", "unknown", "disabled", "unavailable"]),
+  installedVersion: z.string().nullable(),
+  latestVersion: z.string().nullable(),
+});
+export const checkUpdatesRpc = defineRpc({
+  name: "impeccable-live.check-updates",
+  input: liveBindingSchema.extend({
+    force: z.boolean().optional(), attempt: z.number().int(),
+    cliPath: z.string().nullable(), appRoot: z.string(),
+  }),
+  output: updateStatusSchema,
+});
+
 export const sessionStatusSchema = z.object({
   attempt: z.number().int(),
   phase: z.string(),

@@ -1,10 +1,10 @@
 import { useRpc, useTabState, type PluginAgentPanelProps } from "@getpaseo/plugin/client";
 import { copyText, ExternalLink, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
-  inspectRpc, devLogsRpc, retryRpc, selectRpc, startRpc, statusRpc, stopDevServerRpc, stopRpc,
+  checkUpdatesRpc, inspectRpc, devLogsRpc, retryRpc, selectRpc, startRpc, statusRpc, stopDevServerRpc, stopRpc,
 } from "../shared/live";
 import {
   configAfterChoice, dependencyRecovery, defaultPanelConfig, needsPanelConfigMigration, panelConfigSchema, parseArgumentList,
@@ -46,12 +46,30 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
   const select = useRpc(selectRpc);
   const stopDevelopment = useRpc(stopDevServerRpc);
   const developmentLogs = useRpc(devLogsRpc);
+  const checkUpdates = useRpc(checkUpdatesRpc);
+  const queryClient = useQueryClient();
   const ids = { workspaceId, agentId: params.agentId };
 
   const state = useQuery({
     queryKey: ["impeccable-live", workspaceId, params.agentId],
     queryFn: () => status(ids),
     refetchInterval: 1000,
+  });
+  const updateKey = ["impeccable-live-updates", workspaceId, params.agentId,
+    state.data?.dependencyReadiness?.cliPath, state.data?.dependencyReadiness?.appRoot, state.data?.attempt];
+  const updateInput = { ...ids, attempt: state.data?.attempt ?? -1,
+    cliPath: state.data?.dependencyReadiness?.cliPath ?? null,
+    appRoot: state.data?.dependencyReadiness?.appRoot ?? "" };
+  const updates = useQuery({
+    queryKey: updateKey,
+    queryFn: () => checkUpdates(updateInput),
+    enabled: !edited && !!state.data?.dependencyReadiness?.cliPath,
+    staleTime: 24 * 60 * 60 * 1000,
+    retry: false,
+  });
+  const refreshUpdates = useMutation({
+    mutationFn: ({ input }: { input: typeof updateInput; queryKey: typeof updateKey }) => checkUpdates({ ...input, force: true }),
+    onSuccess: (result, { queryKey }) => queryClient.setQueryData(queryKey, result),
   });
   useEffect(() => {
     let mounted = true;
@@ -259,6 +277,13 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
         <Text selectable={view === "error"} accessibilityRole={view === "error" ? "alert" : undefined} style={muted}>{summary}</Text>
       </View>
 
+      {!edited && updates.data?.status === "available" && <View style={section} accessibilityLiveRegion="polite">
+        <Text style={{ ...text, fontWeight: "600" }}>Impeccable update available</Text>
+        <Text style={muted}>Installed {updates.data.installedVersion} · Latest {updates.data.latestVersion}</Text>
+        <ExternalLink href="https://impeccable.style/tutorials/getting-started/">Update instructions</ExternalLink>
+        {control(refreshUpdates.isPending ? "Checking for updates…" : "Check again", () => refreshUpdates.mutate({ input: updateInput, queryKey: updateKey }), false, refreshUpdates.isPending || updates.isFetching)}
+      </View>}
+
       {readiness && recovery && (readiness.checks.some(check => check.status === "blocked") || recoveryText) && <View style={{ gap: 12 }} accessibilityLabel="Impeccable setup">
         {readiness.checks.filter(check => check.status === "blocked").map(check =>
           <View key={check.id} style={{ gap: 4 }}>
@@ -349,6 +374,15 @@ export function LivePanel({ theme, layout, workspaceId, params, tab, navigation 
           {development?.command && <Text selectable style={{ ...text, fontFamily: "monospace" }}>{development.command}</Text>}
           {(readiness?.cliPath || config.cliPath) && <Text selectable style={muted}>Impeccable: {readiness?.cliPath || config.cliPath}</Text>}
           {readiness?.engineVersion && <Text style={muted}>Engine: {readiness.engineVersion}</Text>}
+          {readiness?.cliPath && <View style={{ gap: 8 }}>
+            <Text style={muted}>{updates.isFetching || refreshUpdates.isPending ? "Checking for Impeccable updates…"
+              : updates.error || (refreshUpdates.error && JSON.stringify(refreshUpdates.variables?.queryKey) === JSON.stringify(updateKey)) || updates.data?.status === "unavailable" ? "Couldn’t check for Impeccable updates."
+              : updates.data?.status === "disabled" ? "Impeccable update checks are disabled."
+              : updates.data?.status === "current" ? `Impeccable ${updates.data.installedVersion}: no newer skill version found.`
+              : updates.data?.status === "available" ? `Impeccable ${updates.data.installedVersion}: ${updates.data.latestVersion} is available.`
+              : "Impeccable skill version is unknown."}</Text>
+            {updates.data?.status !== "disabled" && control(refreshUpdates.isPending ? "Checking for updates…" : "Check for updates", () => refreshUpdates.mutate({ input: updateInput, queryKey: updateKey }), false, refreshUpdates.isPending || updates.isFetching)}
+          </View>}
           {readiness?.cliPath && <Text style={muted}>Launcher and engine checks do not verify that the attached agent can load the skill. Install Impeccable for that coding tool and reload the agent after installation.</Text>}
           {readiness?.checks.filter(check => check.id === "compatibility").map(check => <Text key={check.id} selectable style={muted}>{check.message}</Text>)}
         </View>}
